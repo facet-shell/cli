@@ -9,12 +9,13 @@ set -l commands install add update remove backup restore theme grub boot goxlr l
 
 complete -c frame -f
 complete -c frame -s n -l dry-run -d "print what would happen, change nothing"
-complete -c frame -s y -l yes -d "do not ask for confirmation"
+complete -c frame -s y -l yes -d "do not ask, take the defaults"
+complete -c frame -s v -l verbose -d "full output of long commands instead of a spinner"
 
 complete -c frame -n "not __fish_seen_subcommand_from $commands" -a install -d "the setup, or just some modules"
-complete -c frame -n "not __fish_seen_subcommand_from $commands" -a add -d "fetch and set up a module"
+complete -c frame -n "not __fish_seen_subcommand_from $commands" -a add -d "fetch and set up a module (no name: pick)"
 complete -c frame -n "not __fish_seen_subcommand_from $commands" -a update -d "pull, back up, relink, re-apply themes"
-complete -c frame -n "not __fish_seen_subcommand_from $commands" -a remove -d "unlink configs"
+complete -c frame -n "not __fish_seen_subcommand_from $commands" -a remove -d "unlink and delete a module (no name: pick)"
 complete -c frame -n "not __fish_seen_subcommand_from $commands" -a backup -d "snapshot configs and app settings"
 complete -c frame -n "not __fish_seen_subcommand_from $commands" -a restore -d "list backups or put one back"
 complete -c frame -n "not __fish_seen_subcommand_from $commands" -a theme -d "list, set or check the theme"

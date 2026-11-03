@@ -6,7 +6,7 @@ _frame() {
     local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD - 1]} cmd=${COMP_WORDS[1]:-} words=""
 
     if [[ $cur == -* ]]; then
-        words="-n --dry-run -y --yes"
+        words="-n --dry-run -y --yes -v --verbose"
     elif ((COMP_CWORD == 1)); then
         words=$(frame __complete commands 2>/dev/null)
     else

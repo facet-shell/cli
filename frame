@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # frame – install and manage frameshell, a terminal-styled desktop for CachyOS + Hyprland
 #
+#   frame                        in a terminal: a menu of the commands below
 #   frame install [module...]    the setup (no names), or just these modules
-#   frame add <module...>        fetch and set up a module later (steam, spotify, keyboard, …)
+#   frame add [module...]        fetch and set up a module later (no names: pick from a list)
 #   frame update  [module...]    pull the CLI and the modules, back up, relink, re-apply themes
-#   frame remove  <module...>    unlink a module and delete it (dependencies stay installed)
+#   frame remove  [module...]    unlink a module and delete it (no names: pick from a list)
 #   frame backup  [package...]   snapshot the current configs and app settings
 #   frame restore [name|latest]  list backups, or put one back
 #   frame theme [list|set <name>|check]
@@ -20,7 +21,8 @@
 #   frame status                 show what is linked and what is missing
 #   frame clean                  free disk space: caches, orphans, old backups, logs
 #
-# Options: -n/--dry-run (print what would happen), -y/--yes (no questions)
+# Options: -n/--dry-run (print what would happen), -y/--yes (no questions),
+#          -v/--verbose (the full output of long commands instead of a spinner)
 
 set -euo pipefail
 
@@ -87,10 +89,9 @@ module_packages() {
 ensure_module() {
   local m=$1
   has_module "$m" && return 0
-  info "Getting the $m module"
   run mkdir -p "$MODULES_DIR"
-  run git clone --depth 1 --quiet "$ORG_URL/$m.git" "$(module_dir "$m")" \
-    || die "Could not get $ORG_URL/$m"
+  task "Getting the $m module" "$m" git clone --depth 1 --quiet "$ORG_URL/$m.git" "$(module_dir "$m")" \
+    || die "Could not download the $m module ($ORG_URL/$m)" "check the internet connection, then run the same command again"
 }
 
 PACKAGES=(ghostty fish starship fastfetch spicetify vencord steam quickshell hypr wallpaper keyboard gtk zed dolphin zen)
@@ -150,7 +151,10 @@ declare -A EXTRAS=(
 DRY_RUN=0
 ASSUME_YES=0
 NO_PULL=0
+VERBOSE=0
 LAST_BACKUP=""
+# Output of long commands (task) when they run behind a spinner
+LOG_FILE="$STATE_DIR/frame.log"
 
 # ── Output ───────────────────────────────────────────────────
 
@@ -192,16 +196,85 @@ else
   c_text='' c_primary='' c_secondary='' c_muted='' c_ok='' c_warn='' c_danger='' c_bold='' c_reset=''
 fi
 
+# Once per run: the main menu shows it, the command picked there does not repeat it
+HEADER_SHOWN=0
 header() {
+  ((HEADER_SHOWN)) && return 0
+  HEADER_SHOWN=1
   printf '\n  %s%sframe%s  %sframeshell · CachyOS · Hyprland%s\n\n' \
     "$c_bold" "$c_primary" "$c_reset" "$c_muted" "$c_reset"
 }
 
-step() { printf '\n%s●%s %s%s%s\n' "$c_primary" "$c_reset" "$c_bold" "$*" "$c_reset"; }
+# Steps are numbered ([2/9] Dependencies) once a command has said how many there are
+STEP_N=0
+STEP_TOTAL=0
+steps_total() { STEP_TOTAL=$1; }
+step() {
+  if ((STEP_N < STEP_TOTAL)); then
+    STEP_N=$((STEP_N + 1))
+    printf '\n%s[%d/%d]%s %s%s%s\n' "$c_primary" "$STEP_N" "$STEP_TOTAL" "$c_reset" "$c_bold" "$*" "$c_reset"
+  else
+    printf '\n%s●%s %s%s%s\n' "$c_primary" "$c_reset" "$c_bold" "$*" "$c_reset"
+  fi
+}
 info() { printf '  %s%s%s\n' "$c_muted" "$*" "$c_reset"; }
 ok()   { printf '  %s✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
 warn() { printf '  %s!%s %s\n' "$c_warn" "$c_reset" "$*"; }
-die()  { printf '%s✗%s %s\n' "$c_danger" "$c_reset" "$*" >&2; exit 1; }
+# A next step for the user, under an error or a warning
+hint() { printf '  %s→ %s%s\n' "$c_muted" "$*" "$c_reset"; }
+# die <what went wrong> [what to do now]
+die() {
+  printf '%s✗%s %s\n' "$c_danger" "$c_reset" "$1" >&2
+  [[ -z ${2:-} ]] || hint "$2" >&2
+  exit 1
+}
+
+# Interactive: menus and checklists need a terminal on both ends
+interactive() { [[ -t 0 && -t 2 ]]; }
+
+# The command name a typo most likely meant, out of the candidates; nothing if none is close
+closest() {
+  local word=${1,,} best="" best_d=99 c
+  shift
+  for c in "$@"; do
+    if ((${#word} >= 2)) && [[ $c == "$word"* ]]; then
+      echo "$c"
+      return 0
+    fi
+    edit_distance "$word" "$c"
+    ((REPLY < best_d)) && best=$c best_d=$REPLY
+  done
+  ((best_d <= (${#word} > 4 ? 2 : 1))) && echo "$best"
+  return 0
+}
+
+# Edit distance in REPLY; two swapped letters count as one edit ("stema" → steam)
+edit_distance() {
+  local a=$1 b=$2 n=${#1} m=${#2} i j cost v w=$((${#2} + 1))
+  local -a d=()
+  for ((i = 0; i <= n; i++)); do d[i*w]=$i; done
+  for ((j = 0; j <= m; j++)); do d[j]=$j; done
+  for ((i = 1; i <= n; i++)); do
+    for ((j = 1; j <= m; j++)); do
+      [[ ${a:i-1:1} == "${b:j-1:1}" ]] && cost=0 || cost=1
+      v=$((d[(i - 1) * w + j] + 1))
+      ((d[i * w + j - 1] + 1 < v)) && v=$((d[i * w + j - 1] + 1))
+      ((d[(i - 1) * w + j - 1] + cost < v)) && v=$((d[(i - 1) * w + j - 1] + cost))
+      if ((i > 1 && j > 1)) && [[ ${a:i-1:1} == "${b:j-2:1}" && ${a:i-2:1} == "${b:j-1:1}" ]]; then
+        ((d[(i - 2) * w + j - 2] + 1 < v)) && v=$((d[(i - 2) * w + j - 2] + 1))
+      fi
+      d[i*w+j]=$v
+    done
+  done
+  REPLY=${d[n * w + m]}
+}
+
+# "did you mean steam? " for a typo, else nothing; used in front of a list of the choices
+did_you_mean() {
+  local c
+  c=$(closest "$@")
+  [[ -z $c ]] || printf 'did you mean %s? ' "$c"
+}
 
 # Runs a command, or only prints it in dry-run mode
 run() {
@@ -219,6 +292,173 @@ run_quiet() {
     return 0
   fi
   "$@" >/dev/null 2>&1
+}
+
+# m:ss since a $SECONDS value
+elapsed() {
+  local s=$((SECONDS - $1))
+  printf '%d:%02d' $((s / 60)) $((s % 60))
+}
+
+# The first task of a run starts a section in the log; the log keeps only its newest
+# 200 KB once it grows past 1 MB
+LOG_STARTED=0
+FRAME_ARGS=""
+log_start() {
+  ((LOG_STARTED)) && return 0
+  LOG_STARTED=1
+  mkdir -p "$STATE_DIR"
+  if [[ -f $LOG_FILE ]] && (($(wc -c <"$LOG_FILE") > 1048576)); then
+    tail -c 204800 "$LOG_FILE" >"$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+  fi
+  printf '\n── frame %s · %(%F %T)T ──\n' "$FRAME_ARGS" -1 >>"$LOG_FILE"
+}
+
+# Spinner mode: a terminal to draw on and no -v
+quiet_tasks() { ((!VERBOSE)) && [[ -t 2 && ${TERM:-dumb} != dumb ]]; }
+
+# task <doing> <done> <command...>: a long command (download, package install, build).
+# In a terminal a spinner and the time stay on one line while the output goes to
+# $LOG_FILE; on failure the last lines of it and where the rest is. With -v, without a
+# terminal the command runs like run, in a dry run it is only printed. <done> is printed
+# on success (empty: nothing, the caller says it; never in a dry run, nothing was done).
+task() {
+  local doing=$1 done_msg=$2
+  shift 2
+  if ((DRY_RUN)); then
+    run "$@"
+    return 0
+  fi
+  if ! quiet_tasks; then
+    info "$doing"
+    "$@" || return
+    [[ -z $done_msg ]] || ok "$done_msg"
+    return 0
+  fi
+  # The command cannot ask for a password behind the spinner; sudo asks now, on screen
+  case $1 in sudo | paru | yay) sudo -v || return 1 ;; esac
+  log_start
+  printf '\n[%(%T)T] %s\n$ %s\n' -1 "$doing" "$*" >>"$LOG_FILE"
+  local from pid rc=0 start=$SECONDS i=0 line
+  local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+  from=$(($(wc -c <"$LOG_FILE") + 1))
+  "$@" >>"$LOG_FILE" 2>&1 </dev/null &
+  pid=$!
+  printf '\e[?25l' >&2
+  trap 'kill "$pid" 2>/dev/null; printf "\r\e[K\e[?25h" >&2; exit 130' INT
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r\e[K  %s%s%s %s %s%s%s' "$c_primary" "${frames[i++ % 10]}" "$c_reset" \
+      "$doing" "$c_muted" "$(elapsed "$start")" "$c_reset" >&2
+    sleep 0.1
+  done
+  wait "$pid" || rc=$?
+  trap - INT
+  printf '\r\e[K\e[?25h' >&2
+  if ((rc == 0)); then
+    [[ -z $done_msg ]] || printf '  %s✓%s %s %s%s%s\n' "$c_ok" "$c_reset" "$done_msg" "$c_muted" "$(elapsed "$start")" "$c_reset"
+    return 0
+  fi
+  printf '  %s✗%s %s failed %s%s%s\n' "$c_danger" "$c_reset" "$doing" "$c_muted" "$(elapsed "$start")" "$c_reset"
+  tail -c +"$from" "$LOG_FILE" | grep -v '^[[:space:]]*$' | tail -n 12 | while IFS= read -r line; do
+    printf '  %s│ %s%s\n' "$c_muted" "$line" "$c_reset"
+  done || true
+  hint "full log: ${LOG_FILE/#"$HOME"/\~} · all output on screen: the same command with -v"
+  return "$rc"
+}
+
+# checklist <question> <preselected ids> <id|description>...: prints the picked ids, one per
+# line. In a terminal: ↑↓ move, space toggles, a toggles all, enter takes the ticked ones,
+# esc cancels (exit code 1). Drawn on stderr like menu. Without a terminal: a numbered
+# list answered with numbers ("1 3"), all or none; enter keeps the preselection, and so
+# does -y.
+checklist() {
+  local question=$1 preset=" $2 "
+  shift 2
+  local opts=("$@") n=$# i id desc key rest sel=0 drawn=0 picked mark answer
+  local -a on=()
+  for ((i = 0; i < n; i++)); do
+    [[ $preset == *" ${opts[i]%%|*} "* ]] && on[i]=1 || on[i]=0
+  done
+
+  if ((!ASSUME_YES)) && interactive; then
+    printf '  %s\n' "$question" >&2
+    printf '  %s↑↓ move · space tick · a all · enter done · esc cancel%s\n' "$c_muted" "$c_reset" >&2
+    printf '\e[?25l' >&2
+    trap 'printf "\e[?25h\n" >&2; exit 130' INT
+    while :; do
+      # n options and the count below them
+      ((drawn)) && printf '\e[%dA' $((n + 1)) >&2
+      drawn=1
+      picked=0
+      for ((i = 0; i < n; i++)); do
+        id=${opts[i]%%|*}
+        desc=${opts[i]#*|}
+        ((on[i])) && picked=$((picked + 1))
+        ((on[i])) && mark="$c_primary[■]$c_reset" || mark="$c_muted[ ]$c_reset"
+        if ((i == sel)); then
+          printf '\r\e[K  %s❯%s %s %s%-11s%s %s\n' "$c_primary" "$c_reset" "$mark" "$c_bold" "$id" "$c_reset" "$desc" >&2
+        elif ((on[i])); then
+          printf '\r\e[K    %s %-11s %s\n' "$mark" "$id" "$desc" >&2
+        else
+          printf '\r\e[K    %s %s%-11s%s %s\n' "$mark" "$c_muted" "$id" "$c_reset" "$desc" >&2
+        fi
+      done
+      printf '\r\e[K  %s%d of %d ticked%s\n' "$c_muted" "$picked" "$n" "$c_reset" >&2
+      IFS= read -rsn1 key || key=$'\e'
+      case $key in
+        "") break ;;
+        " ") on[sel]=$((1 - on[sel])) ;;
+        a | A)
+          # All on, or all off when they already are
+          mark=0
+          for ((i = 0; i < n; i++)); do ((on[i])) || mark=1; done
+          for ((i = 0; i < n; i++)); do on[i]=$mark; done
+          ;;
+        k) sel=$(((sel - 1 + n) % n)) ;;
+        j) sel=$(((sel + 1) % n)) ;;
+        $'\e')
+          rest=""
+          IFS= read -rsn2 -t 0.05 rest || true
+          case $rest in
+            "[A") sel=$(((sel - 1 + n) % n)) ;;
+            "[B") sel=$(((sel + 1) % n)) ;;
+            "")
+              trap - INT
+              printf '\e[?25h' >&2
+              return 1
+              ;;
+          esac
+          ;;
+      esac
+    done
+    trap - INT
+    printf '\e[?25h' >&2
+  elif ((!ASSUME_YES)); then
+    printf '  %s\n' "$question" >&2
+    for ((i = 0; i < n; i++)); do
+      ((on[i])) && mark="[x]" || mark="[ ]"
+      printf '    %s%d%s %s %-11s %s%s%s\n' "$c_primary" $((i + 1)) "$c_reset" "$mark" "${opts[i]%%|*}" "$c_muted" "${opts[i]#*|}" "$c_reset" >&2
+    done
+    printf '  Numbers (e.g. 1 3), all or none [enter: as ticked] ' >&2
+    answer=""
+    read -r answer || true
+    [[ -t 0 ]] || printf '%s\n' "$answer" >&2
+    case ${answer,,} in
+      "") ;;
+      all) for ((i = 0; i < n; i++)); do on[i]=1; done ;;
+      none) for ((i = 0; i < n; i++)); do on[i]=0; done ;;
+      *)
+        for ((i = 0; i < n; i++)); do on[i]=0; done
+        for i in ${answer//,/ }; do
+          [[ $i =~ ^[0-9]+$ ]] && ((i >= 1 && i <= n)) && on[i - 1]=1
+        done
+        ;;
+    esac
+  fi
+  for ((i = 0; i < n; i++)); do
+    ((on[i])) && echo "${opts[i]%%|*}"
+  done
+  return 0
 }
 
 # Like confirm, but no unless the answer is yes; -y counts as no (nothing extra unasked)
@@ -355,45 +595,93 @@ choose() {
   echo "${opts[answer - 1]%%|*}"
 }
 
+# Every command, for the help, the main menu's checks and "did you mean"
+COMMANDS=(install add update remove backup restore theme grub boot goxlr login wallpaper spotify layout status clean help)
+
 usage() {
   header
+  local s=$c_secondary r=$c_reset m=$c_muted b=$c_bold
   cat <<EOF
-  ${c_bold}Usage${c_reset}  frame <command> [module...] [options]
+  ${b}Usage${r}  frame [command] [module...] [options]   ${m}(no command: a menu)${r}
 
-  ${c_bold}Commands${c_reset}
-    install [module...]   the setup (no names), or just these modules
-    add <module...>       fetch and set up a module later
-    update  [module...]   pull the CLI and the modules, back up, relink, re-apply themes
-                          (run "frame update spicetify" after a Spotify update)
-    remove  <module...>   unlink a module and delete it, dependencies stay installed
-    backup  [pkg...]      snapshot the current configs and app settings
-    restore [name|latest] list backups, or put one back
-    theme                 write every app color file from the active theme
-    theme list            show the themes, the active one marked
-    theme set [name]      switch every app to another theme (no name: pick one with the arrow keys)
-    theme check           only report files that are out of date
-    grub [install|remove] theme the GRUB boot menu (copies to /boot, needs sudo)
-    boot [install|remove] boot splash (Plymouth) and console colors in the theme (needs sudo)
-    goxlr                 faders, buttons and animation of the GoXLR in the theme's colors
-    login [install|remove] the lockscreen look as the login screen (greetd greeter, needs sudo)
-    login auto            no greeter at boot: greetd starts Hyprland, the shell's lockscreen asks for the password
-    wallpaper <…>         wallpaper backends, e.g. "frame wallpaper backend mpv"
-                          (both|mpv|image; all commands: frame wallpaper help)
-    spotify login         connect the Spotify Web API for the launcher (docs/spotify.md)
-    spotify status        logged in or not; "spotify logout" forgets the tokens
-    layout [tiling|canvas] normal tiling or the infinite canvas (windows on an endless plane)
-    status                show what is linked and what is missing
-    clean                 free disk space: package caches, orphans, old backups, logs
+  ${b}Getting started${r}
+    ${s}install${r} [module...]       the setup (no names), or just these modules
+    ${s}add${r} [module...]           fetch and set up a module later (no names: pick from a list)
+    ${m}e.g. frame add steam${r}
 
-  ${c_bold}Options${c_reset}
-    -n, --dry-run         print what would happen, change nothing
-    -y, --yes             do not ask for confirmation
+  ${b}Everyday${r}
+    ${s}update${r} [module...]        pull the CLI and the modules, back up, relink, re-apply themes
+                              (run "frame update spotify" after a Spotify update)
+    ${s}theme${r}                     write every app color file from the active theme
+    ${s}theme set${r} [name]          switch every app to another theme (no name: pick one)
+    ${s}theme list${r} · ${s}check${r}        the themes, or only report files that are out of date
+    ${s}layout${r} [tiling|canvas]    normal tiling or the infinite canvas
+    ${s}status${r}                    what is linked and what is missing
+    ${m}e.g. frame theme set sakura${r}
 
-  ${c_bold}Modules${c_reset}   ${MODULES[*]}
-  ${c_bold}Packages${c_reset}  ${PACKAGES[*]}
-  ${c_bold}Themes${c_reset}    $(theme_ids | tr '\n' ' ')
+  ${b}Apps${r}
+    ${s}spotify${r} login|status      connect the Spotify Web API for the launcher; logout forgets it
+    ${s}wallpaper${r} <…>             wallpaper backends: both, mpv, image (frame wallpaper help)
+    ${s}goxlr${r}                     GoXLR faders, buttons and animation in the theme's colors
+    ${m}e.g. frame wallpaper backend mpv${r}
+
+  ${b}System${r}
+    ${s}login${r} [install|remove]    the lockscreen look as the login screen (greetd, sudo)
+    ${s}login auto${r}                no greeter at boot, the shell's lockscreen asks instead
+    ${s}boot${r} [install|remove]     boot splash (Plymouth) and console colors (sudo)
+    ${s}grub${r} [install|remove]     theme the GRUB boot menu (copies to /boot, sudo)
+    ${s}backup${r} [pkg...]           snapshot the current configs and app settings
+    ${s}restore${r} [name|latest]     list backups, or put one back
+    ${s}remove${r} [module...]        unlink a module and delete it (dependencies stay)
+    ${s}clean${r}                     free disk space: caches, orphans, old backups, logs
+    ${m}e.g. frame restore latest${r}
+
+  ${b}Options${r}
+    -n, --dry-run             print what would happen, change nothing
+    -y, --yes                 do not ask, take the defaults
+    -v, --verbose             show everything long commands print (otherwise: a spinner,
+                              the output in ${LOG_FILE/#"$HOME"/\~})
+
+  ${b}Modules${r}   ${MODULES[*]}
+  ${b}Packages${r}  ${PACKAGES[*]}
+  ${b}Themes${r}    $(theme_ids | tr '\n' ' ')
 
 EOF
+}
+
+# frame without a command, in a terminal: the everyday commands with the current state
+# next to them; sets MENU_CMD and MENU_ARGS for main
+main_menu() {
+  header
+  local pick start=0 opts
+  # Nothing there yet: install; otherwise the usual update
+  [[ -n $(installed_modules) ]] && start=2
+  opts=(
+    "install|set up frameshell, or more modules"
+    "add|add apps: Spotify, Vesktop, Steam, Zed, Dolphin, Zen"
+    "update|pull, back up, relink, re-apply the theme"
+    "theme|switch the colors (now: $(current_theme))"
+    "layout|tiling or the infinite canvas (now: $(current_layout))"
+    "remove|unlink and delete modules"
+    "status|what is linked and what is missing"
+    "clean|free disk space"
+    "help|all commands"
+  )
+  pick=$(menu "What do you want to do?" "$start" "${opts[@]}") || exit 0
+  MENU_ARGS=()
+  case $pick in
+    theme) MENU_ARGS=(set) ;;
+    layout)
+      local now
+      now=$(current_layout)
+      pick=$(menu "Which layout? (now: $now)" "$([[ $now == canvas ]] && echo 1 || echo 0)" \
+        "tiling|Hyprland's tiling with workspaces" \
+        "canvas|windows float on an endless plane, the bar shows a minimap") || exit 0
+      MENU_ARGS=("$pick")
+      pick=layout
+      ;;
+  esac
+  MENU_CMD=$pick
 }
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -405,7 +693,8 @@ is_package() {
 }
 
 need_arch() {
-  command -v pacman >/dev/null || die "frame needs an Arch-based system (pacman not found)."
+  command -v pacman >/dev/null \
+    || die "pacman not found: frame needs an Arch-based system" "frameshell runs on CachyOS (or Arch) with Hyprland"
 }
 
 has_pkg() {
@@ -440,15 +729,25 @@ install_deps() {
   fi
   info "Missing: ${missing[*]}"
 
-  local noconfirm=()
-  ((ASSUME_YES)) && noconfirm=(--noconfirm)
+  local flags=() cmd=()
+  ((ASSUME_YES)) && flags=(--noconfirm)
   helper="$(aur_helper)"
+  # Behind the spinner nobody can answer: the list was confirmed already, so the defaults
+  # are taken; --sudoloop keeps sudo alive through long AUR builds
+  if quiet_tasks && ((!DRY_RUN)); then
+    flags=(--noconfirm)
+    [[ -n $helper ]] && flags+=(--sudoloop)
+    [[ $helper == paru ]] && flags+=(--skipreview)
+  fi
   if [[ -n $helper ]]; then
-    run "$helper" -S --needed "${noconfirm[@]}" "${missing[@]}"
+    cmd=("$helper" -S --needed "${flags[@]}" "${missing[@]}")
   else
     warn "No AUR helper (paru/yay) found, AUR packages like spicetify-cli will fail"
-    run sudo pacman -S --needed "${noconfirm[@]}" "${missing[@]}"
+    cmd=(sudo pacman -S --needed "${flags[@]}" "${missing[@]}")
   fi
+  local count=${#missing[@]} with=${helper:-pacman}
+  task "Installing $count packages with $with" "$count packages installed" "${cmd[@]}" \
+    || die "Installing the packages failed" "run the command again with -v to see what $with asks or reports"
 }
 
 # Zen's default profile folder, from profiles.ini: the [Install…] entry wins, then the
@@ -623,7 +922,7 @@ link_completions() {
 # Lists for the completions: frame __complete commands|packages|installed|themes|backups
 cmd_complete() {
   case ${1:-} in
-    commands) printf '%s\n' install add update remove backup restore theme grub boot goxlr login wallpaper spotify layout status clean help ;;
+    commands) printf '%s\n' "${COMMANDS[@]}" ;;
     modules) printf '%s\n' "${MODULES[@]}" ;;
     packages) printf '%s\n' "${PACKAGES[@]}" ;;
     installed) installed_packages ;;
@@ -690,13 +989,14 @@ post_spicetify() {
 
   # apply fails on a fresh install or after a Spotify update; a new backup fixes both
   # The quiet first try avoids spicetify's "you haven't backed up" error on a fresh install
-  if run_quiet spicetify apply || run spicetify backup apply; then
-    ok "Spotify theme applied"
-  else
-    warn "spicetify failed. Open Spotify once, log in, then run: frame update spicetify"
-    info "Still broken after a Spotify update? Try: spicetify restore backup apply"
-    info "Spotify from the AUR may need write access: https://spicetify.app/docs/advanced-usage/installation#spotify-installed-from-aur"
+  if task "Applying the Spotify theme" "Spotify theme applied" \
+    bash -c 'spicetify apply >/dev/null 2>&1 || spicetify backup apply'; then
+    return 0
   fi
+  warn "spicetify failed"
+  hint "open Spotify once, log in, close it, then: frame update spotify"
+  info "Still broken after a Spotify update? Try: spicetify restore backup apply"
+  info "Spotify from the AUR may need write access: https://spicetify.app/docs/advanced-usage/installation#spotify-installed-from-aur"
 }
 
 # jq in place: json_edit <file> [jq options…] <filter>
@@ -717,13 +1017,14 @@ vencord_plugin_hash() {
 }
 
 vencord_build() {
-  step "Vencord with ShellBridge"
+  info "Vencord with ShellBridge"
   if [[ -d $VENCORD_SRC/.git ]]; then
-    run git -C "$VENCORD_SRC" pull --ff-only --quiet || warn "Could not update Vencord, building the version that is there"
+    task "Updating Vencord" "" git -C "$VENCORD_SRC" pull --ff-only --quiet \
+      || warn "Could not update Vencord, building the version that is there"
   else
-    info "Getting Vencord (first time only)"
     run mkdir -p "$(dirname "$VENCORD_SRC")"
-    run git clone --depth 1 --quiet https://github.com/Vendicated/Vencord.git "$VENCORD_SRC"
+    task "Getting Vencord (first time only)" "Vencord downloaded" \
+      git clone --depth 1 --quiet https://github.com/Vendicated/Vencord.git "$VENCORD_SRC"
   fi
 
   local marker="$STATE_DIR/vencord-build" wanted=""
@@ -736,8 +1037,8 @@ vencord_build() {
   run rm -rf "$VENCORD_SRC/src/userplugins/shellBridge"
   run mkdir -p "$VENCORD_SRC/src/userplugins"
   run cp -r "$(pkg_dir vencord)/plugins/shellBridge" "$VENCORD_SRC/src/userplugins/shellBridge"
-  info "Building Vencord, this takes about a minute"
-  if run pnpm -C "$VENCORD_SRC" install --frozen-lockfile --silent && run pnpm -C "$VENCORD_SRC" build; then
+  if task "Getting Vencord's build tools" "" pnpm -C "$VENCORD_SRC" install --frozen-lockfile --silent \
+    && task "Building Vencord, about a minute" "" pnpm -C "$VENCORD_SRC" build; then
     # A build that silently left the plugin out is worse than a failed one
     if ((!DRY_RUN)) && ! grep -q "shellbridge-watch" "$VENCORD_SRC/dist/vencordDesktopRenderer.js" 2>/dev/null; then
       warn "The Vencord build does not contain ShellBridge; run: frame update vencord"
@@ -755,6 +1056,7 @@ vencord_build() {
     ok "Build tools removed again (dist/ stays)"
   else
     warn "Vencord build failed, Vesktop keeps its own Vencord (the theme still works)"
+    hint "try again later: frame update discord"
     return 1
   fi
 }
@@ -1227,7 +1529,7 @@ post_hypr() {
 
 need_grub() {
   [[ -f /boot/grub/grub.cfg ]] && command -v grub-mkconfig >/dev/null \
-    || die "This system does not boot with GRUB (no /boot/grub/grub.cfg)."
+    || die "This system does not boot with GRUB (no /boot/grub/grub.cfg)" "nothing to theme here; frame boot themes the boot splash"
 }
 
 # Path of a JetBrains Mono TTF in the given style (Regular, Bold)
@@ -1249,7 +1551,7 @@ grub_apply() {
   regular=$(grub_font_src Regular)
   bold=$(grub_font_src Bold)
   if [[ -z $regular || -z $bold ]] && ((!DRY_RUN)); then
-    die "JetBrains Mono not found (install ttf-jetbrains-mono)"
+    die "JetBrains Mono not found" "install it: sudo pacman -S ttf-jetbrains-mono"
   fi
   # Names must match theme.txt: "Frame Mono Regular 16" etc.
   run grub-mkfont -n "Frame Mono" -s 14 -o "$tmp/frame-regular-14.pf2" "$regular"
@@ -1296,7 +1598,7 @@ grub_apply() {
   fi
 
   step "grub.cfg"
-  run sudo grub-mkconfig -o /boot/grub/grub.cfg
+  task "Rebuilding grub.cfg" "" sudo grub-mkconfig -o /boot/grub/grub.cfg
   ok "Rebuilt /boot/grub/grub.cfg"
 }
 
@@ -1367,13 +1669,13 @@ goxlr_lighting() {
 
 cmd_goxlr() {
   header
-  command -v jq >/dev/null || die "frame goxlr needs jq (pacman -S jq)"
-  command -v curl >/dev/null || die "frame goxlr needs curl"
+  command -v jq >/dev/null || die "frame goxlr needs jq" "install it: sudo pacman -S jq"
+  command -v curl >/dev/null || die "frame goxlr needs curl" "install it: sudo pacman -S curl"
   local id
   id=$(current_theme)
   load_palette "$id"
   step "GoXLR lighting (${PALETTE[name]})"
-  [[ -n $(goxlr_serial) ]] || die "goxlr-utility is not answering on $GOXLR_API (is goxlr-daemon running?)"
+  [[ -n $(goxlr_serial) ]] || die "goxlr-utility is not answering on $GOXLR_API" "start it (goxlr-daemon &) or install it: paru -S goxlr-utility"
   goxlr_lighting "$id"
 }
 
@@ -1439,7 +1741,7 @@ cmd_login() {
   need_arch
   header
   GREETD_CONFIG=$(greetd_config_path)
-  [[ -f $GREETD_CONFIG ]] || die "greetd is not the display manager here ($GREETD_CONFIG is missing); frame login only knows greetd"
+  [[ -f $GREETD_CONFIG ]] || die "greetd is not the display manager here ($GREETD_CONFIG is missing)" "frame login only works with greetd; install and enable greetd first"
   case $action in
     install)
       local user command theme_file="$(pkg_dir quickshell)/.config/quickshell/config/Theme.qml"
@@ -1448,10 +1750,10 @@ cmd_login() {
       # Everything the greeter needs, checked before greetd is touched: a broken greeter
       # leaves only a text console to log in on
       if [[ ! -x /usr/bin/noctalia-greeter-compositor ]] && ! command -v cage >/dev/null; then
-        die "The greeter needs a small compositor: noctalia-greeter (CachyOS) or cage (pacman -S cage)"
+        die "The greeter needs a small compositor" "install cage (sudo pacman -S cage), or noctalia-greeter on CachyOS"
       fi
-      command -v qs >/dev/null || die "Quickshell (qs) is missing; frame install quickshell first"
-      [[ -f $theme_file ]] || die "No rendered theme yet ($theme_file); run frame theme first"
+      command -v qs >/dev/null || die "Quickshell (qs) is missing" "install the shell first: frame install shell"
+      [[ -f $theme_file ]] || die "No rendered theme yet ($theme_file)" "write it first: frame theme"
       greetd_is_display_manager \
         || warn "systemd does not start greetd as the display manager; enable it: sudo systemctl enable greetd (after disabling the other one)"
       local owner
@@ -1493,7 +1795,7 @@ cmd_login() {
       run sudo install -m 644 "$tmp" "$GREETD_CONFIG"
       rm -f "$tmp"
       if ((!DRY_RUN)) && [[ $(greetd_default_command "$GREETD_CONFIG") != "$GREETER_DIR/frame-greeter-session" ]]; then
-        die "$GREETD_CONFIG does not name the frameshell greeter after writing it; look at the file before rebooting"
+        die "$GREETD_CONFIG does not name the frameshell greeter after writing it" "look at the file before rebooting"
       fi
       ok "Wrote $GREETD_CONFIG (default_session → frameshell greeter)"
       info "Try it without rebooting from a text console (Ctrl+Alt+F3): sudo systemctl restart greetd"
@@ -1540,13 +1842,13 @@ cmd_login() {
       step "greetd"
       if ! greetd_restore; then
         # Deleting the greeter now would leave greetd pointing at nothing
-        die "No copy of the original greetd config found; set [default_session] command in $GREETD_CONFIG back by hand (CachyOS: noctalia-greeter-session), then run frame login remove again"
+        die "No copy of the original greetd config found" "set [default_session] command in $GREETD_CONFIG back by hand (CachyOS: noctalia-greeter-session), then run frame login remove again"
       fi
       step "Greeter files"
       run sudo rm -rf "$GREETER_DIR"
       ok "Removed $GREETER_DIR"
       ;;
-    *) die "Unknown login action: $action (install, auto or remove)" ;;
+    *) die "Unknown login action: $action" "$(did_you_mean "$action" install auto remove)frame login install, auto or remove" ;;
   esac
 }
 
@@ -1577,9 +1879,9 @@ vt_palette() {
 # mkinitcpio on CachyOS, dracut on some installs: the splash lives in the initramfs
 rebuild_initramfs() {
   if command -v mkinitcpio >/dev/null; then
-    run sudo mkinitcpio -P
+    task "Rebuilding the initramfs (mkinitcpio)" "" sudo mkinitcpio -P
   elif command -v dracut >/dev/null; then
-    run sudo dracut --regenerate-all --force
+    task "Rebuilding the initramfs (dracut)" "" sudo dracut --regenerate-all --force
   else
     warn "Neither mkinitcpio nor dracut found; rebuild the initramfs yourself"
     return 1
@@ -1694,7 +1996,7 @@ cmd_boot() {
       run_quiet sudo setvtrgb vga || true
       ok "Default console colors"
       ;;
-    *) die "Unknown boot action: $action (install or remove)" ;;
+    *) die "Unknown boot action: $action" "$(did_you_mean "$action" install remove)frame boot install or remove" ;;
   esac
 }
 
@@ -1722,12 +2024,12 @@ cmd_grub() {
       run sudo rm -rf "$GRUB_THEME_DIR"
       ok "Removed $GRUB_THEME_DIR"
       step "grub.cfg"
-      run sudo grub-mkconfig -o /boot/grub/grub.cfg
+      task "Rebuilding grub.cfg" "" sudo grub-mkconfig -o /boot/grub/grub.cfg
       ok "Rebuilt /boot/grub/grub.cfg"
       [[ -f $STATE_DIR/grub-default.orig ]] && info "Your original /etc/default/grub is kept at $STATE_DIR/grub-default.orig"
       return 0
       ;;
-    *) die "Unknown grub action: $action (install or remove)" ;;
+    *) die "Unknown grub action: $action" "$(did_you_mean "$action" install remove)frame grub install or remove" ;;
   esac
 }
 
@@ -1777,7 +2079,7 @@ load_palette() {
   while IFS='=' read -r key value; do
     PALETTE[$key]=$value
   done < <(jq -r 'paths(scalars) as $p | "\($p | map(tostring) | join("."))=\(getpath($p))"' "$REPO/themes/$id.json")
-  [[ -n ${PALETTE[colors.primary]:-} ]] || die "themes/$id.json has no colors.primary"
+  [[ -n ${PALETTE[colors.primary]:-} ]] || die "themes/$id.json has no colors.primary" "fix the file, or pick another theme: frame theme set"
   PALETTE[id]=$id
   # For templates that need a real path, e.g. Zen's home page ({{home}})
   PALETTE[home]=$HOME
@@ -1876,7 +2178,7 @@ theme_render() {
       info "would write the $id color files (needs jq)"
       return 0
     fi
-    die "frame theme needs jq (pacman -S jq)"
+    die "frame theme needs jq" "install it: sudo pacman -S jq"
   fi
   load_palette "$id"
   [[ -n $quiet ]] || step "Theme ${PALETTE[name]} (themes/$id.json)"
@@ -1890,7 +2192,7 @@ theme_render() {
     TEMPLATE_DIR="$base/templates"
     if ! render_template "$TEMPLATE_DIR/$rel" >"$tmp"; then
       rm -f "$tmp"
-      die "Could not render $m/templates/$rel"
+      die "Could not render $m/templates/$rel" "fetch the module again: frame update $m"
     fi
     if [[ -f $base/$rel ]] && cmp -s "$tmp" "$base/$rel"; then
       state=unchanged color=$c_ok mark=✓
@@ -2017,9 +2319,9 @@ theme_pick() {
 
 theme_set() {
   local id=$1
-  is_theme "$id" || die "Unknown theme: $id (available: $(theme_ids | tr '\n' ' '))"
+  is_theme "$id" || die "Unknown theme: $id" "$(did_you_mean "$id" $(theme_ids))themes: $(theme_ids | tr '\n' ' ')"
   # Check before saving, so the saved theme never differs from the written files
-  command -v jq >/dev/null || ((DRY_RUN)) || die "frame theme needs jq (pacman -S jq)"
+  command -v jq >/dev/null || ((DRY_RUN)) || die "frame theme needs jq" "install it: sudo pacman -S jq"
   header
   save_theme "$id"
   theme_render "$id" 0
@@ -2044,7 +2346,7 @@ cmd_theme() {
         picked=$(theme_pick) || exit 0
         theme_set "$picked"
       else
-        die "Name a theme: frame theme set <name> (see: frame theme list)"
+        die "Which theme?" "name it: frame theme set <name> (all of them: frame theme list)"
       fi
       ;;
     check)
@@ -2056,7 +2358,7 @@ cmd_theme() {
       if is_theme "$action"; then
         theme_set "$action"
       else
-        die "Unknown theme action: $action (frame theme list | set <name> | check)"
+        die "Unknown theme or action: $action" "$(did_you_mean "$action" list set check $(theme_ids))frame theme list, set <name> or check"
       fi
       ;;
   esac
@@ -2143,13 +2445,15 @@ cmd_spotify() {
 
 # Always part of frameshell; the rest is asked in the setup
 CORE_PACKAGES=(ghostty fish starship fastfetch quickshell hypr wallpaper gtk)
-OPTIONAL_PACKAGES=(
-  "spicetify|Spotify, themed, with search and controls in the launcher"
-  "vencord|Vesktop (Discord), themed, with calls and DMs in the shell"
+# The apps of the setup's checklist: modules, and claude for Claude Code
+OPTIONAL_APPS=(
+  "spotify|Spotify, themed, with search and controls in the launcher"
+  "discord|Vesktop (Discord), themed, with calls and DMs in the shell"
   "steam|Steam with Millennium, themed, its notifications in the shell"
   "zed|Zed, the code editor"
   "dolphin|Dolphin, the file manager"
   "zen|Zen, the browser"
+  "claude|Claude Code, the claude command; the launcher's c asks it"
 )
 LAYOUT_STATE="$STATE_DIR/layout"
 
@@ -2187,7 +2491,7 @@ save_layout() {
 # frame install without packages: the desktop first, the apps are a separate choice so
 # only the modules that are wanted get downloaded
 setup_wizard() {
-  local mode apps o
+  local mode picked app apps=() all=""
   mode=$(choose "What should be set up?" \
     "full|the full desktop: bar, launcher, lockscreen, Hyprland, wallpapers, terminal and prompt" \
     "shell|only the shell, without the terminal look (Ghostty, fish, Starship, fastfetch)")
@@ -2196,23 +2500,24 @@ setup_wizard() {
   else
     SETUP_PKGS=("${CORE_PACKAGES[@]}")
   fi
-  apps=$(choose "Apps? (add one any time: frame add <app>)" \
-    "pick|each app with a yes or no" \
-    "all|all of them: Spotify, Vesktop, Steam, Zed, Dolphin, Zen and Claude Code" \
-    "none|no apps for now")
-  case $apps in
-    all)
-      for o in "${OPTIONAL_PACKAGES[@]}"; do SETUP_PKGS+=("${o%%|*}"); done
+
+  for app in "${OPTIONAL_APPS[@]}"; do
+    [[ ${app%%|*} == claude ]] && command -v claude >/dev/null && continue
+    apps+=("$app")
+    all+=" ${app%%|*}"
+  done
+  # Nothing ticked to start with; -y takes every app, as it always did
+  picked=$(checklist "Which apps? (more any time: frame add)" "$( ((ASSUME_YES)) && echo "$all")" "${apps[@]}") \
+    || { info "Cancelled, nothing changed"; exit 0; }
+  for app in $picked; do
+    if [[ $app == claude ]]; then
       WANT_CLAUDE=1
-      ;;
-    pick)
-      for o in "${OPTIONAL_PACKAGES[@]}"; do
-        confirm "${o#*|}?" && SETUP_PKGS+=("${o%%|*}")
-      done
-      confirm "Claude Code (the claude command; the launcher's c asks it)?" && WANT_CLAUDE=1
-      ;;
-  esac
-  command -v claude >/dev/null && WANT_CLAUDE=0
+    else
+      mapfile -t -O "${#SETUP_PKGS[@]}" SETUP_PKGS < <(module_packages "$app")
+    fi
+  done
+  picked=${picked//$'\n'/ }
+  ok "Apps: ${picked:-none}"
 
   # A connected GoXLR needs its utility for the faders and mutes in the shell
   if goxlr_connected && ! command -v goxlr-daemon >/dev/null; then
@@ -2240,7 +2545,7 @@ install_claude() {
     ok "claude already installed"
     return 0
   fi
-  if run bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
+  if task "Installing Claude Code" "" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'; then
     ok "Claude Code installed; run claude once to sign in, then the launcher's c works"
   else
     warn "Claude Code install failed; try again with: curl -fsSL https://claude.ai/install.sh | bash"
@@ -2273,7 +2578,7 @@ cmd_layout() {
     info "Layout: $now (frame layout tiling|canvas)"
     return 0
   fi
-  [[ $want == tiling || $want == canvas ]] || die "Unknown layout: $want (tiling or canvas)"
+  [[ $want == tiling || $want == canvas ]] || die "Unknown layout: $want" "$(did_you_mean "$want" tiling canvas)frame layout tiling or canvas"
   if [[ $want == "$now" ]]; then
     ok "Already $now"
     return 0
@@ -2316,11 +2621,13 @@ cmd_install() {
     setup_wizard
     pkgs=("${SETUP_PKGS[@]}")
   fi
+  # Modules, Dependencies, Theme, one per package, Claude Code, GoXLR, frame command
+  steps_total $((4 + ${#pkgs[@]} + WANT_CLAUDE + WANT_GOXLR))
   # Only the modules that are picked get cloned
   command -v git >/dev/null || install_deps git
   step "Modules"
   while IFS= read -r m; do
-    if has_module "$m"; then ok "$m is there"; else ensure_module "$m" && ok "$m"; fi
+    if has_module "$m"; then ok "$m is there"; else ensure_module "$m"; fi
   done < <(modules_of "${pkgs[@]}")
   # spicetify themes a Spotify that has to be there; the AUR one lives in /opt/spotify
   if [[ " ${pkgs[*]} " == *" spicetify "* ]] && ! command -v spotify >/dev/null && ! command -v spotify-launcher >/dev/null; then
@@ -2369,13 +2676,28 @@ cmd_install() {
   printf '\n%sDone.%s Open a new terminal to see the changes.\n\n' "$c_ok" "$c_reset"
 }
 
+# An installed GRUB theme is refreshed by a plain frame update
+grub_refresh_wanted() { [[ -d $GRUB_THEME_DIR ]] && command -v grub-mkconfig >/dev/null; }
+
 cmd_update() {
   need_arch
   local requested=("$@") pkgs=("$@")
   ((${#pkgs[@]})) || mapfile -t pkgs < <(installed_packages)
-  ((${#pkgs[@]})) || die "Nothing installed yet, run: frame install"
+  ((${#pkgs[@]})) || die "Nothing installed yet" "start with: frame install"
 
   header
+  # Modules and frame (unless pulled already), Backup, Theme, Dependencies, one per
+  # package, and GRUB's four on a plain update. After the CLI restarted itself it goes
+  # on counting from where the old version stopped.
+  local grub=0
+  ((${#requested[@]} == 0)) && grub_refresh_wanted && grub=4
+  if ((NO_PULL)); then
+    STEP_N=${FRAME_STEPS_DONE:-0}
+    steps_total $((STEP_N + 3 + ${#pkgs[@]} + grub))
+  else
+    steps_total $((5 + ${#pkgs[@]} + grub))
+  fi
+
   if ((!NO_PULL)); then
     # The modules first: the CLI below may restart itself with --no-pull
     step "Modules"
@@ -2386,7 +2708,7 @@ cmd_update() {
         continue
       fi
       mod_before=$(git -C "$(module_dir "$m")" rev-parse --short HEAD)
-      if run_quiet git -C "$(module_dir "$m")" pull --ff-only --quiet; then
+      if task "Updating $m" "" git -C "$(module_dir "$m")" pull --ff-only --quiet; then
         [[ $(git -C "$(module_dir "$m")" rev-parse --short HEAD) == "$mod_before" ]] \
           && ok "$m up to date" || ok "$m updated"
       else
@@ -2396,10 +2718,11 @@ cmd_update() {
 
     step "frame"
     [[ -z $(git -C "$REPO" status --porcelain --untracked-files=no) ]] \
-      || die "The CLI has local changes. Commit or stash them first (cd $REPO)."
+      || die "The CLI has local changes, so it cannot pull" "keep them aside: git -C $REPO stash, then frame update again (or commit them)"
     local before after
     before=$(git -C "$REPO" rev-parse HEAD)
-    run git -C "$REPO" pull --ff-only
+    task "Updating frame" "" git -C "$REPO" pull --ff-only --quiet \
+      || die "Could not update frame" "check the internet connection, then frame update again"
     after=$(git -C "$REPO" rev-parse HEAD)
     if [[ $before == "$after" ]]; then
       ok "Already up to date"
@@ -2408,6 +2731,8 @@ cmd_update() {
       # Continue with the freshly pulled version of this script
       local flags=(--no-pull)
       ((ASSUME_YES)) && flags+=(-y)
+      ((VERBOSE)) && flags+=(-v)
+      export FRAME_STEPS_DONE=$STEP_N
       exec "$REPO/frame" update "${flags[@]}" "${requested[@]}"
     fi
   fi
@@ -2431,17 +2756,44 @@ cmd_update() {
   done
 
   # A plain `frame update` also refreshes an installed GRUB theme
-  if ((${#requested[@]} == 0)) && [[ -d $GRUB_THEME_DIR ]] && command -v grub-mkconfig >/dev/null; then
-    grub_apply
-  fi
+  ((grub)) && grub_apply
   # New in a later version: completions that an older install never linked
   link_completions
   printf '\n%sDone.%s\n\n' "$c_ok" "$c_reset"
 }
 
+# pick_modules <add|remove>: the modules ticked in a checklist, for frame add and frame
+# remove without names; add offers the ones not downloaded yet, remove the installed ones.
+# Prints nothing when there is nothing to do (the reason goes to stderr).
+pick_modules() {
+  local action=$1 m opts=() names=() picked what=installed
+  [[ $action == add ]] && what="not installed yet"
+  for m in "${MODULES[@]}"; do
+    if [[ $action == add ]]; then has_module "$m" && continue; else has_module "$m" || continue; fi
+    opts+=("$m|${MODULE_DESC[$m]}")
+    names+=("$m")
+  done
+  if ((${#opts[@]} == 0)); then
+    [[ $action == add ]] && ok "Every module is installed already" >&2 || info "No modules installed" >&2
+    return 0
+  fi
+  interactive && ((!ASSUME_YES)) \
+    || die "Which module?" "name it: frame $action ${names[0]} · $what: ${names[*]}"
+  picked=$(checklist "Which modules? ($what)" "" "${opts[@]}") \
+    || { info "Cancelled, nothing changed" >&2; return 0; }
+  [[ -n $picked ]] || info "Nothing ticked, nothing changed" >&2
+  echo "$picked"
+}
+
 cmd_remove() {
-  (($#)) || die "Name the modules or packages to remove, e.g.: frame remove spotify"
-  command -v stow >/dev/null || ((DRY_RUN)) || die "stow is not installed"
+  if (($# == 0)); then
+    local picked
+    header
+    picked=$(pick_modules remove) || exit
+    [[ -n $picked ]] || exit 0
+    set -- $picked
+  fi
+  command -v stow >/dev/null || ((DRY_RUN)) || die "stow is not installed" "install it: sudo pacman -S stow"
   local p m pkgs=()
   mapfile -t pkgs < <(expand_targets "$@")
   for p in "${pkgs[@]}"; do
@@ -2501,11 +2853,11 @@ cmd_restore() {
 
   [[ $name == latest ]] && name=$(list_backups | head -n 1)
   local src="$BACKUP_ROOT/$name"
-  [[ -n $name && -d $src ]] || die "No backup named ${1} (list them with: frame restore)"
+  [[ -n $name && -d $src ]] || die "No backup named ${1}" "list them: frame restore"
 
   local files=() f
   while IFS= read -r f; do files+=("$f"); done < <(cd "$src" && find . -type f | sed 's|^\./||' | sort)
-  ((${#files[@]})) || die "Backup $name is empty"
+  ((${#files[@]})) || die "Backup $name is empty" "pick another one: frame restore"
 
   step "Restore $name"
   for f in "${files[@]}"; do info "~/$f"; done
@@ -2728,31 +3080,55 @@ cmd_status() {
 # ── Main ─────────────────────────────────────────────────────
 
 main() {
-  local cmd=help args=() a
-  if (($#)); then cmd=$1; shift; fi
+  local cmd="" args=() a
+  FRAME_ARGS="$*"
+  # The first word that is not an option is the command; options go anywhere
   while (($#)); do
     case $1 in
       -n | --dry-run) DRY_RUN=1 ;;
       -y | --yes) ASSUME_YES=1 ;;
+      -v | --verbose) VERBOSE=1 ;;
       --no-pull) NO_PULL=1 ;;
       -h | --help) cmd=help ;;
-      -*) die "Unknown option: $1" ;;
-      *) args+=("$1") ;;
+      -*) die "Unknown option: $1" "options: -n/--dry-run, -y/--yes, -v/--verbose (frame help)" ;;
+      *) if [[ -z $cmd ]]; then cmd=$1; else args+=("$1"); fi ;;
     esac
     shift
   done
 
+  # No command: the menu in a terminal, the help everywhere else (pipes, scripts)
+  if [[ -z $cmd ]]; then
+    cmd=help
+    if interactive && ((!ASSUME_YES)); then
+      local MENU_CMD MENU_ARGS=()
+      main_menu
+      cmd=$MENU_CMD
+      args=("${MENU_ARGS[@]}")
+      echo
+    fi
+  fi
+
   case $cmd in
     install | i | add | update | up | remove | rm | uninstall | backup)
       for a in "${args[@]}"; do
-        is_package "$a" || is_module "$a" || die "Unknown module or package: $a (modules: ${MODULES[*]})"
+        is_package "$a" || is_module "$a" \
+          || die "Unknown module or package: $a" "$(did_you_mean "$a" "${MODULES[@]}" "${PACKAGES[@]}")modules: ${MODULES[*]}"
       done
       ;;
   esac
 
   case $cmd in
     install | i) cmd_install "${args[@]}" ;;
-    add) (( ${#args[@]} )) || die "Name a module, e.g.: frame add steam (all: ${MODULES[*]})"; cmd_install "${args[@]}" ;;
+    add)
+      if ((${#args[@]} == 0)); then
+        local picked
+        header
+        picked=$(pick_modules add) || exit
+        [[ -n $picked ]] || exit 0
+        mapfile -t args <<<"$picked"
+      fi
+      cmd_install "${args[@]}"
+      ;;
     update | up) cmd_update "${args[@]}" ;;
     remove | rm | uninstall) cmd_remove "${args[@]}" ;;
     backup) cmd_backup "${args[@]}" ;;
@@ -2769,7 +3145,10 @@ main() {
     status | st | doctor) cmd_status ;;
     clean) cmd_clean ;;
     help) usage ;;
-    *) die "Unknown command: $cmd (try: frame help)" ;;
+    *)
+      a=$(closest "$cmd" "${COMMANDS[@]}")
+      die "Unknown command: $cmd" "${a:+did you mean frame $a? }all commands: frame help"
+      ;;
   esac
 }
 

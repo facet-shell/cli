@@ -11,7 +11,8 @@ That puts the CLI in `~/.local/share/frameshell/cli` and starts the setup. Only 
 pick are downloaded, to `~/.local/share/frameshell/modules`.
 
 ```
-frame add steam            get a module and link it
+frame                      a menu of the everyday commands
+frame add steam            get a module and link it (no name: pick from a list)
 frame update               pull everything and re-link
 frame theme set            pick a theme with the arrow keys
 frame status               what is installed, what is missing

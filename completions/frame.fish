@@ -39,7 +39,8 @@ complete -c frame -n "__fish_seen_subcommand_from restore" -a "latest (__frame_l
 complete -c frame -n "__fish_seen_subcommand_from theme; and not __fish_seen_subcommand_from list ls set use pick check" -a "list set check" -d action
 complete -c frame -n "__fish_seen_subcommand_from theme; and not __fish_seen_subcommand_from list ls check" -a "(__frame_list themes)" -d theme
 
-complete -c frame -n "__fish_seen_subcommand_from grub boot login" -a "install remove"
+complete -c frame -n "__fish_seen_subcommand_from grub login" -a "install remove"
+complete -c frame -n "__fish_seen_subcommand_from boot" -a "install check remove"
 complete -c frame -n "__fish_seen_subcommand_from layout" -a "tiling canvas"
 complete -c frame -n "__fish_seen_subcommand_from spotify" -a "login logout status"
 complete -c frame -n "__fish_seen_subcommand_from wallpaper; and not __fish_seen_subcommand_from list set option backend apply pause resume stop" -a "list set option backend apply pause resume stop"

@@ -22,7 +22,8 @@ _frame() {
                     words=$(frame __complete themes 2>/dev/null)
                 fi
                 ;;
-            grub | boot | login) words="install remove" ;;
+            grub | login) words="install remove" ;;
+            boot) words="install check remove" ;;
             layout) words="tiling canvas" ;;
             spotify) words="login logout status" ;;
             wallpaper)

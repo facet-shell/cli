@@ -11,7 +11,7 @@
 #   frame theme [list|set <name>|check]
 #                                write every app color file from themes/<name>.json
 #   frame grub [install|remove]  theme the GRUB boot menu (copies to /boot, needs sudo)
-#   frame boot [install|remove]  boot splash (Plymouth) and text console colors in the theme
+#   frame boot [install|check|remove] boot splash (Plymouth) and text console colors in the theme
 #   frame goxlr                  light the GoXLR in the theme's colors (goxlr-utility)
 #   frame install keyboard       AULA F75: frame-keyboard, its udev rule (sudo) and the Super+K app
 #   frame login [install|auto|remove] the lockscreen look as the login screen, or straight into Hyprland (greetd, needs sudo)
@@ -635,7 +635,7 @@ usage() {
   ${b}System${r}
     ${s}login${r} [install|remove]    the lockscreen look as the login screen (greetd, sudo)
     ${s}login auto${r}                no greeter at boot, the shell's lockscreen asks instead
-    ${s}boot${r} [install|remove]     boot splash (Plymouth) and console colors (sudo)
+    ${s}boot${r} [check|remove]       boot splash (Plymouth) and console colors (sudo)
     ${s}grub${r} [install|remove]     theme the GRUB boot menu (copies to /boot, sudo)
     ${s}backup${r} [pkg...]           snapshot the current configs and app settings
     ${s}restore${r} [name|latest]     list backups, or put one back
@@ -1895,8 +1895,83 @@ rebuild_initramfs() {
   fi
 }
 
+# The installed splash differs from what the templates render now (new version or theme)
+boot_splash_outdated() {
+  local f src
+  src=$(module_dir shell)/plymouth/frameshell
+  [[ -d $PLYMOUTH_DIR ]] || return 1
+  for f in frameshell.plymouth frameshell.script; do
+    cmp -s "$src/$f" "$PLYMOUTH_DIR/$f" || return 0
+  done
+  return 1
+}
+
+# The contents of the newest initramfs, empty when there is no image or no tool to list it
+initramfs_listing() {
+  local img
+  img=$(ls -t /boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -n1)
+  [[ -n $img ]] || return 0
+  if command -v lsinitcpio >/dev/null; then
+    sudo lsinitcpio "$img" 2>/dev/null
+  elif command -v lsinitrd >/dev/null; then
+    sudo lsinitrd "$img" 2>/dev/null
+  fi
+}
+
+# Everything that keeps the splash from showing, one line each
+boot_check() {
+  local hooks listing all_ok=1
+  if [[ $(plymouth-set-default-theme 2>/dev/null) == frameshell ]]; then
+    ok "Plymouth uses frameshell"
+  else
+    warn "Plymouth uses $(plymouth-set-default-theme 2>/dev/null || echo nothing), not frameshell; run frame boot"
+    all_ok=0
+  fi
+  if boot_splash_outdated; then
+    warn "The installed splash is older than the templates; run frame boot (frame update does it too)"
+    all_ok=0
+  fi
+  if grep -qw splash /proc/cmdline 2>/dev/null; then
+    ok "splash is on the kernel command line"
+  else
+    warn "No splash on the kernel command line, so plymouth only shows text; add splash (and quiet) in the boot loader's config"
+    all_ok=0
+  fi
+  if [[ -f /etc/mkinitcpio.conf ]]; then
+    hooks=$(grep -hE '^\s*HOOKS=' /etc/mkinitcpio.conf /etc/mkinitcpio.conf.d/*.conf 2>/dev/null | tail -n1)
+    if [[ $hooks == *plymouth* ]]; then
+      ok "mkinitcpio has the plymouth hook"
+    else
+      warn "mkinitcpio has no plymouth hook: the splash only starts once the disk is mounted, mostly too late to see; add plymouth to HOOKS in /etc/mkinitcpio.conf (after udev), then frame boot"
+      all_ok=0
+    fi
+  fi
+  listing=$(initramfs_listing)
+  if [[ -n $listing ]]; then
+    if grep -q 'plymouth/themes/frameshell' <<<"$listing"; then
+      ok "The initramfs has the frameshell splash"
+    else
+      warn "The initramfs has no frameshell splash, so the boot shows the old one or none; run frame boot"
+      all_ok=0
+    fi
+    # NVIDIA's driver loads late unless it is in the initramfs; until then plymouth has
+    # no screen to draw on, and on a fast boot that is the whole boot
+    if [[ -d /sys/module/nvidia ]] && ! grep -q 'nvidia[-_]drm' <<<"$listing"; then
+      warn "The NVIDIA driver is not in the initramfs, so the splash gets no screen until the boot is nearly done; add nvidia nvidia_modeset nvidia_uvm nvidia_drm to MODULES in /etc/mkinitcpio.conf, then frame boot"
+      all_ok=0
+    fi
+  fi
+  # The boot's plymouth still running in the desktop: shutdown shows that one, in boot
+  # mode ("starting"), instead of starting its own
+  if pgrep -x plymouthd >/dev/null; then
+    warn "plymouthd from the boot is still running, so shutdown shows it as a boot screen; end it after login with: sudo systemctl add-wants multi-user.target plymouth-quit.service"
+    all_ok=0
+  fi
+  ((all_ok)) && info "All fine. A very fast boot only flashes the splash; plymouth.debug on the kernel command line writes /var/log/plymouth-debug.log"
+  return 0
+}
+
 boot_splash_install() {
-  step "Boot splash (Plymouth)"
   if ! command -v plymouth-set-default-theme >/dev/null && ((!DRY_RUN)); then
     warn "Plymouth is not installed (pacman -S plymouth), skipping the splash"
     return 0
@@ -1929,14 +2004,10 @@ boot_splash_install() {
   run sudo plymouth-set-default-theme frameshell
   ok "Plymouth uses frameshell"
 
-  # Without the hook or the splash parameter nothing shows, whatever the theme
-  if [[ -f /etc/mkinitcpio.conf ]] && ! grep -qs plymouth /etc/mkinitcpio.conf /etc/mkinitcpio.conf.d/* 2>/dev/null; then
-    warn "mkinitcpio has no plymouth hook; add plymouth to HOOKS in /etc/mkinitcpio.conf (after udev)"
-  fi
-  grep -qw splash /proc/cmdline 2>/dev/null \
-    || warn "The kernel command line has no splash parameter; add splash (and quiet) in your boot loader's config"
   info "Rebuilding the initramfs, the splash is part of it (takes a minute)"
   rebuild_initramfs && ok "initramfs rebuilt"
+  # Without the hook, the splash parameter or an early screen nothing shows at boot
+  ((DRY_RUN)) || boot_check
 }
 
 boot_tty_install() {
@@ -1974,7 +2045,7 @@ EOF
   ok "Text consoles use the theme's colors (Ctrl+Alt+F3 to look)"
 }
 
-# frame boot [install|remove]: Plymouth splash and console colors in the theme
+# frame boot [install|check|remove]: Plymouth splash and console colors in the theme, or why the splash does not show
 cmd_boot() {
   local action=${1:-install}
   need_arch
@@ -1983,9 +2054,16 @@ cmd_boot() {
     install)
       info "Puts the frameshell splash ($(current_theme)) into Plymouth and the theme's colors on the text consoles (needs sudo)"
       confirm "Set up the boot splash and console colors?" || exit 0
+      step "Boot splash (Plymouth)"
       boot_splash_install
       boot_tty_install
       printf '\n%sDone.%s Reboot to see the splash.\n\n' "$c_ok" "$c_reset"
+      ;;
+    check)
+      command -v plymouth-set-default-theme >/dev/null || die "Plymouth is not installed" "install it: sudo pacman -S plymouth, then frame boot"
+      step "Boot splash (Plymouth)"
+      boot_check
+      echo
       ;;
     remove)
       confirm "Back to the distro's splash and the default console colors?" || exit 0
@@ -2003,7 +2081,7 @@ cmd_boot() {
       run_quiet sudo setvtrgb vga || true
       ok "Default console colors"
       ;;
-    *) die "Unknown boot action: $action" "$(did_you_mean "$action" install remove)frame boot install or remove" ;;
+    *) die "Unknown boot action: $action" "$(did_you_mean "$action" install check remove)frame boot install, check or remove" ;;
   esac
 }
 
@@ -2726,15 +2804,16 @@ cmd_update() {
 
   header
   # Modules and frame (unless pulled already), Backup, Theme, Dependencies, one per
-  # package, and GRUB's four on a plain update. After the CLI restarted itself it goes
-  # on counting from where the old version stopped.
-  local grub=0
+  # package, and on a plain update GRUB's four and the boot splash. After the CLI
+  # restarted itself it goes on counting from where the old version stopped.
+  local grub=0 boot=0
   ((${#requested[@]} == 0)) && grub_refresh_wanted && grub=4
+  ((${#requested[@]} == 0)) && [[ -d $PLYMOUTH_DIR ]] && boot=1
   if ((NO_PULL)); then
     STEP_N=${FRAME_STEPS_DONE:-0}
-    steps_total $((STEP_N + 3 + ${#pkgs[@]} + grub))
+    steps_total $((STEP_N + 3 + ${#pkgs[@]} + grub + boot))
   else
-    steps_total $((5 + ${#pkgs[@]} + grub))
+    steps_total $((5 + ${#pkgs[@]} + grub + boot))
   fi
 
   if ((!NO_PULL)); then
@@ -2796,6 +2875,17 @@ cmd_update() {
 
   # A plain `frame update` also refreshes an installed GRUB theme
   ((grub)) && grub_apply
+  # The splash lives in /usr/share and the initramfs, so a newer template or theme
+  # only reaches it when it is installed again
+  if ((boot)); then
+    step "Boot splash"
+    if boot_splash_outdated; then
+      info "The splash changed with this update; installing it again (sudo, rebuilds the initramfs)"
+      boot_splash_install
+    else
+      ok "Boot splash up to date"
+    fi
+  fi
   # New in a later version: completions that an older install never linked
   link_completions
   printf '\n%sDone.%s\n\n' "$c_ok" "$c_reset"

@@ -503,10 +503,16 @@ confirm() {
 # starts with what was typed ("sa" → sakura), a digit takes that option, Esc cancels
 # (exit code 1, nothing printed). Options are "id|description"; the menu is drawn on
 # stderr so the answer can be captured: id=$(menu "Question?" <start index> "${opts[@]}")
+# With MENU_PREVIEW set (id → lines, MENU_PREVIEW_LINES of them), the highlighted option's
+# preview is drawn under the list, as frame theme set does with each theme's colors.
+declare -A MENU_PREVIEW=()
+MENU_PREVIEW_LINES=0
 menu() {
   local question=$1 sel=${2:-0}
   shift 2
-  local opts=("$@") n=$# i id desc key rest attempt typed="" drawn=0
+  local opts=("$@") n=$# i id desc key rest attempt typed="" drawn=0 pv=0
+  # Only when the previews are for these options (they stay set after the theme menu)
+  [[ -n ${MENU_PREVIEW[${1%%|*}]:-} ]] && pv=$MENU_PREVIEW_LINES
   ((sel >= 0 && sel < n)) || sel=0
   printf '  %s\n' "$question" >&2
   printf '  %s↑↓ move · enter pick · type to jump · esc cancel%s\n' "$c_muted" "$c_reset" >&2
@@ -514,7 +520,7 @@ menu() {
   # The cursor has to come back even on Ctrl+C
   trap 'printf "\e[?25h\n" >&2; exit 130' INT
   while :; do
-    ((drawn)) && printf '\e[%dA' "$n" >&2
+    ((drawn)) && printf '\e[%dA' $((n + pv)) >&2
     drawn=1
     for ((i = 0; i < n; i++)); do
       id=${opts[i]%%|*}
@@ -525,6 +531,7 @@ menu() {
         printf '\r\e[K    %s%-11s%s %s\n' "$c_muted" "$id" "$c_reset" "$desc" >&2
       fi
     done
+    ((pv)) && printf '%s' "${MENU_PREVIEW[${opts[sel]%%|*}]:-}" >&2
     IFS= read -rsn1 key || key=$'\e'
     case $key in
       "") break ;;
@@ -2059,8 +2066,53 @@ theme_choices() {
   local id desc
   for id in "$DEFAULT_THEME" $(theme_ids | grep -vx "$DEFAULT_THEME"); do
     desc=$(sed -n 's/.*"description": *"\([^"]*\)".*/\1/p' "$REPO/themes/$id.json" | head -n 1)
-    echo "$id|$desc"
+    echo "$id|$(theme_swatch "$id")$c_muted$desc$c_reset"
   done
+}
+
+# A strip of the theme's main colors for a list row (nothing when colors are off)
+theme_swatch() {
+  ((USE_COLOR)) || return 0
+  local r h
+  for r in bg surface2 primary secondary accent text; do
+    h=$(theme_hex "$1" "$r")
+    [[ -n $h ]] && printf '%s  ' "$(bg_hex "$h")"
+  done
+  printf '%s ' "$c_reset"
+}
+
+# What menu shows under the list for the highlighted theme: every palette color, the 16
+# terminal colors and a line set in them. Fills MENU_PREVIEW, one entry per theme.
+theme_previews() {
+  ((USE_COLOR)) || return 0
+  local id role hex file entry sample plain pad
+  local -A c
+  for id in $(theme_ids); do
+    file=$REPO/themes/$id.json
+    c=()
+    while read -r role hex; do
+      c[$role]=$hex
+    done < <(sed -n '/"colors"/,/}/s/.*"\([A-Za-z0-9]*\)": *"#\([0-9a-fA-F]\{6\}\)".*/\1 \2/p' "$file")
+    printf -v entry '\r\e[K\n\r\e[K      %s%-7s%s' "$c_muted" colors "$c_reset"
+    for role in bg surface surface2 shadow primary secondary accent text textDim muted frame danger warn ok; do
+      [[ -n ${c[$role]:-} ]] && entry+="$(bg_hex "${c[$role]}")   "
+    done
+    printf -v entry '%s%s\n\r\e[K      %s%-7s%s' "$entry" "$c_reset" "$c_muted" ansi "$c_reset"
+    for hex in $(sed -n '/"ansi"/,/]/s/.*"#\([0-9a-fA-F]\{6\}\)".*/\1/p' "$file"); do
+      entry+="$(bg_hex "$hex")   "
+    done
+    # A prompt line on the theme's background, padded to the width of the ansi row
+    sample="$(bg_hex "${c[bg]:-000000}")$(fg_hex "${c[primary]:-ffffff}") ❯ $(fg_hex "${c[text]:-ffffff}")frame "
+    sample+="$(fg_hex "${c[textDim]:-ffffff}")theme set $(fg_hex "${c[accent]:-ffffff}")$id  "
+    sample+="$(fg_hex "${c[ok]:-ffffff}")✓ ok $(fg_hex "${c[warn]:-ffffff}")! warn $(fg_hex "${c[danger]:-ffffff}")✗ no"
+    plain=" ❯ frame theme set $id  ✓ ok ! warn ✗ no"
+    pad=$((48 - ${#plain}))
+    ((pad > 0)) || pad=1
+    printf -v pad '%*s' "$pad" ""
+    printf -v entry '%s%s\n\r\e[K      %7s%s%s%s\n' "$entry" "$c_reset" "" "$sample" "$pad" "$c_reset"
+    MENU_PREVIEW[$id]=$entry
+  done
+  MENU_PREVIEW_LINES=4
 }
 
 save_theme() {
@@ -2279,14 +2331,7 @@ theme_list() {
   cur=$(current_theme)
   for id in $(theme_ids); do
     desc=$(sed -n 's/.*"description": *"\([^"]*\)".*/\1/p' "$REPO/themes/$id.json" | head -n 1)
-    swatch=""
-    if ((USE_COLOR)); then
-      for r in bg surface2 primary secondary accent text; do
-        h=$(theme_hex "$id" "$r")
-        [[ -n $h ]] && swatch+="$(bg_hex "$h")  "
-      done
-      swatch+="$c_reset "
-    fi
+    swatch=$(theme_swatch "$id")
     if [[ $id == "$cur" ]]; then
       printf '  %s❯%s %s%-11s%s %s%s%s%s\n' "$c_primary" "$c_reset" "$c_bold" "$id" "$c_reset" "$swatch" "$c_muted" "$desc" "$c_reset"
     else
@@ -2298,22 +2343,15 @@ theme_list() {
 
 # frame theme set without a name: every theme with its colors, the active one selected
 theme_pick() {
-  local id desc swatch r h i=0 start=0 cur opts=()
+  local id desc i=0 start=0 cur opts=()
   cur=$(current_theme)
   for id in $(theme_ids); do
     desc=$(sed -n 's/.*"description": *"\([^"]*\)".*/\1/p' "$REPO/themes/$id.json" | head -n 1)
-    swatch=""
-    if ((USE_COLOR)); then
-      for r in bg surface2 primary secondary accent text; do
-        h=$(theme_hex "$id" "$r")
-        [[ -n $h ]] && swatch+="$(bg_hex "$h")  "
-      done
-      swatch+="$c_reset "
-    fi
     [[ $id == "$cur" ]] && start=$i
-    opts+=("$id|$swatch$c_muted$desc$c_reset")
+    opts+=("$id|$(theme_swatch "$id")$c_muted$desc$c_reset")
     i=$((i + 1))
   done
+  theme_previews
   menu "Which theme? (now: $cur)" "$start" "${opts[@]}"
 }
 
@@ -2654,6 +2692,7 @@ cmd_install() {
   if [[ ! -f $THEME_STATE ]]; then
     local picked choices=()
     mapfile -t choices < <(theme_choices)
+    theme_previews
     picked=$(choose "Which theme? (switch any time: frame theme set <name>)" "${choices[@]}")
     save_theme "$picked"
   fi

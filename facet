@@ -3744,7 +3744,7 @@ style_names() {
 # and boot screens); facet theme is its colors. The old style's packages are unlinked, the
 # new one's linked into the same folders, the theme written for it, the shell restarted.
 cmd_style() {
-  local want=${1:-} now names=() p pkgs=()
+  local want=${1:-} now names=() p pkgs=() deps=()
   now=$(current_style)
   mapfile -t names < <(style_names)
   if [[ $want == set ]]; then
@@ -3774,11 +3774,14 @@ cmd_style() {
   mapfile -t pkgs < <(module_packages "style-$want")
   step "Backup"
   snapshot_pkgs style "${pkgs[@]}"
+  # The new style's fonts (bloom: Rubik, Material Symbols); without them its icons are names
+  step "Dependencies"
+  mapfile -t deps < <(deps_of "${pkgs[@]}")
+  install_deps "${deps[@]}"
   step "Style $want"
-  # The old style's bar and panels go first; both link into ~/.config/quickshell
-  for p in $(module_packages "style-$now"); do
-    [[ $(link_state "$p") == missing ]] || stow_pkg -D "$p"
-  done
+  # The old style's bar and panels go first; both link into ~/.config/quickshell. Only its
+  # package of the same name: gtk lives in style-tui but serves every style (select_gtk)
+  [[ $(link_state "$now") == missing ]] || stow_pkg -D "$now"
   run mkdir -p "$STATE_DIR"
   if ((DRY_RUN)); then info "would write $want to $STYLE_STATE"; else echo "$want" >"$STYLE_STATE"; fi
   theme_render "$(current_theme)" 0 quiet
@@ -3787,6 +3790,11 @@ cmd_style() {
     run_post "$p"
   done
   select_style_apps
+  # The render made the new style's files in the app modules (ghostty themes/bloom, …);
+  # link them, or the apps point at a theme that is not there
+  for p in $(installed_packages); do
+    [[ $(link_state "$p") == partial ]] && link_pkg "$p" "$LAST_BACKUP"
+  done
   # A new shell.qml means a new shell; the watchdog restarts it cleanly
   if [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
     run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true

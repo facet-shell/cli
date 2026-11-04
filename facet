@@ -839,6 +839,11 @@ is_package() {
   return 1
 }
 
+# sudo works without asking (cached, NOPASSWD) or there is a terminal it can ask on
+sudo_possible() {
+  sudo -n true 2>/dev/null || (exec </dev/tty) 2>/dev/null
+}
+
 need_arch() {
   command -v pacman >/dev/null \
     || die "pacman not found: facet needs an Arch-based system" "facet runs on CachyOS (or Arch) with Hyprland"
@@ -3904,6 +3909,12 @@ cmd_update() {
   local grub=0 boot=0
   ((${#requested[@]} == 0)) && grub_refresh_wanted && grub=4
   ((${#requested[@]} == 0)) && [[ -d $PLYMOUTH_DIR ]] && boot=1
+  # GRUB and the splash need sudo; without a terminal to ask for the password (curl … | bash
+  # from a script, an IDE) they would stop the whole update half way, so they wait for the next one
+  if ((grub || boot)) && ((!DRY_RUN)) && ! sudo_possible; then
+    warn "sudo cannot ask for a password here; GRUB and the boot splash are left for: facet update (in a terminal)"
+    grub=0 boot=0
+  fi
   if ((NO_PULL)); then
     STEP_N=${FACET_STEPS_DONE:-0}
     steps_total $((STEP_N + 3 + ${#pkgs[@]} + grub + boot))
@@ -3950,6 +3961,9 @@ cmd_update() {
     fi
   fi
 
+  # The command first, so a step that fails below never leaves a dangling frame and no facet
+  link_self
+
   step "Backup"
   snapshot_pkgs update "${pkgs[@]}"
 
@@ -3982,8 +3996,6 @@ cmd_update() {
       ok "Boot splash up to date"
     fi
   fi
-  # The command and its completions (new names, or never linked by an older version)
-  link_self
   printf '\n%sDone.%s\n\n' "$c_ok" "$c_reset"
 }
 

@@ -13,6 +13,8 @@
 #   facet grub [install|remove]  theme the GRUB boot menu (copies to /boot, needs sudo)
 #   facet boot [install|check|remove] boot splash (Plymouth) and text console colors in the theme
 #   facet goxlr                  light the GoXLR in the theme's colors (goxlr-utility)
+#   facet audio channels on|off  virtual sound channels (System, Game, Chat, Music) without a GoXLR;
+#                                also: output <sink>, status
 #   facet install keyboard       AULA F75: frame-keyboard, its udev rule (sudo) and the Super+K app
 #   facet login [install|auto|remove] the lockscreen look as the login screen, or straight into Hyprland (greetd, needs sudo)
 #   facet wallpaper <args…>      passed to frame-wallpaper (backend, set, apply, …)
@@ -732,7 +734,7 @@ choose() {
 }
 
 # Every command, for the help, the main menu's checks and "did you mean"
-COMMANDS=(install add update remove backup restore theme style grub boot goxlr login wallpaper spotify layout status clean help)
+COMMANDS=(install add update remove backup restore theme style grub boot goxlr audio login wallpaper spotify layout status clean help)
 
 usage() {
   header
@@ -760,6 +762,8 @@ usage() {
     ${s}spotify${r} login|status      connect the Spotify Web API for the launcher; logout forgets it
     ${s}wallpaper${r} <…>             wallpaper backends: both, mpv, image (facet wallpaper help)
     ${s}goxlr${r}                     GoXLR faders, buttons and animation in the theme's colors
+    ${s}audio channels${r} on|off     virtual System, Game, Chat, Music outputs without a GoXLR
+                              (on [names] [--output <sink>], output <sink>, status)
     ${m}e.g. facet wallpaper backend mpv${r}
 
   ${b}System${r}
@@ -1078,6 +1082,8 @@ cmd_complete() {
     themes) theme_ids ;;
     styles) style_names ;;
     backups) list_backups ;;
+    # Real outputs for facet audio channels output
+    sinks) command -v pactl >/dev/null && { pactl list short sinks 2>/dev/null | awk '$2 !~ /^facet-/ && $2 != "frame-rec" { print $2 }'; } ;;
   esac
   return 0
 }
@@ -1911,6 +1917,339 @@ cmd_goxlr() {
   step "GoXLR lighting (${PALETTE[name]})"
   [[ -n $(goxlr_serial) ]] || die "goxlr-utility is not answering on $GOXLR_API" "start it (goxlr-daemon &) or install it: paru -S goxlr-utility"
   goxlr_lighting "$id"
+}
+
+# ── Sound channels ──────────────────────────────────────────
+# Without a GoXLR: virtual outputs per channel the way the GoXLR has them (System, Game, Chat,
+# Music by default), so the shell's mixer can put apps on them, the control center gets a
+# fader and a mute per channel and a recording gets a track per channel. Strictly optional:
+# nothing exists until `facet audio channels on` (or the setup question, default no).
+#
+# Each channel is one PipeWire loopback (libpipewire-module-loopback): a sink apps play into
+# (node facet-<key>, "Game" in pavucontrol) and a stream from it into the real output
+# (facet-<key>.output, target.object = that output). They live in a drop-in that PipeWire
+# reads at every start, $CHANNELS_CONF, so they survive reboots; System becomes the default
+# output, so every app that is not moved anywhere plays there. WirePlumber never links a
+# loopback back into its own group, and the streams are passive, so idle channels let the
+# output suspend. A sink with a channel's name that is already there (your own virtual sink,
+# not facet's and not the GoXLR's) is taken over instead of making a second one.
+#
+# What the shell needs to find them goes to $CHANNELS_STATE (the shell reads it, never
+# writes it): the output, and per channel its key, label, sink and whether facet made it.
+# `facet audio channels off` removes the drop-in, the state and the shell's mixer memory and
+# puts every app back on the output. Needs pactl (libpulse) on PipeWire and jq.
+CHANNELS_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/pipewire/pipewire.conf.d/facet-channels.conf"
+CHANNELS_STATE="$STATE_DIR/audio-channels.json"
+# The mixer's per-app choices for the virtual channels (services/Channels.qml)
+CHANNELS_ROUTES="$STATE_DIR/audio-routes.json"
+CHANNELS_DEFAULT=(system game chat music)
+
+channels_needs() {
+  command -v jq >/dev/null || die "facet audio needs jq" "install it: sudo pacman -S jq"
+  command -v pactl >/dev/null || die "facet audio needs pactl" "install it: sudo pacman -S libpulse"
+  pactl info 2>/dev/null | grep -qi pipewire \
+    || die "pactl does not reach PipeWire" "the virtual channels need PipeWire with pipewire-pulse (CachyOS default): sudo pacman -S pipewire-pulse"
+}
+
+channels_on_now() { [[ -f $CHANNELS_STATE ]]; }
+
+# Sink node names, one per line
+channels_sinks() { pactl list short sinks 2>/dev/null | awk '{ print $2 }'; }
+channels_has_sink() { channels_sinks | grep -qxF -- "$1"; }
+
+# A sink that already stands for <key> and is not facet's or the GoXLR's: its node name or
+# description is the key (any case, without spaces, - and _), e.g. a "Game" made by hand
+channels_existing() {
+  pactl -f json list sinks 2>/dev/null | jq -r --arg k "$1" '
+    def norm: ascii_downcase | gsub("[\\s_-]"; "");
+    first(.[] | select((.name | startswith("facet-")) | not) | select(.name != "frame-rec")
+      | select(((.description // "") + " " + .name) | test("goxlr"; "i") | not)
+      | select((.name | norm) == $k or ((.description // "") | norm) == $k) | .name) // empty' 2>/dev/null
+}
+
+# Where the channels play into: the one asked for, the default output unless it is one of
+# ours, the one from the last setup, or the first real output
+channels_pick_output() {
+  local want=${1:-} sink
+  if [[ -n $want ]]; then
+    channels_has_sink "$want" || die "No output called $want" "the names: pactl list short sinks"
+    [[ $want != facet-* ]] || die "$want is one of the channels" "pick a real output (pactl list short sinks)"
+    echo "$want"
+    return 0
+  fi
+  sink=$(pactl get-default-sink 2>/dev/null || true)
+  if [[ -n $sink && $sink != facet-* ]] && ! channels_state_has_sink "$sink"; then
+    echo "$sink"
+    return 0
+  fi
+  sink=$(channels_state_output)
+  if [[ -n $sink ]] && channels_has_sink "$sink"; then
+    echo "$sink"
+    return 0
+  fi
+  channels_sinks | grep -v -e '^facet-' -e '^frame-rec$' | head -n 1
+}
+
+channels_state_output() { [[ -f $CHANNELS_STATE ]] && jq -r '.output // empty' "$CHANNELS_STATE" 2>/dev/null; return 0; }
+channels_state_keys() { [[ -f $CHANNELS_STATE ]] && jq -r '.channels[].key' "$CHANNELS_STATE" 2>/dev/null; return 0; }
+channels_state_has_sink() { [[ -f $CHANNELS_STATE ]] && jq -e --arg s "$1" 'any(.channels[]; .sink == $s)' "$CHANNELS_STATE" >/dev/null 2>&1; }
+
+# One loopback in the drop-in: channels_module <key> <label> <output>
+channels_module() {
+  cat <<EOF
+  { name = libpipewire-module-loopback
+    args = {
+      node.description = "$2"
+      audio.position = [ FL FR ]
+      capture.props = {
+        node.name = "facet-$1"
+        node.description = "$2"
+        media.class = "Audio/Sink"
+      }
+      playback.props = {
+        node.name = "facet-$1.output"
+        node.description = "$2 (to the output)"
+        target.object = "$3"
+        stream.dont-remix = true
+        node.passive = true
+      }
+    }
+  }
+EOF
+}
+
+# PipeWire reads the drop-in only at its start; WirePlumber and pipewire-pulse go along
+channels_restart_pipewire() {
+  task "Restarting PipeWire" "" systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service \
+    || die "Could not restart PipeWire" "systemctl --user status pipewire wireplumber"
+  ((DRY_RUN)) && return 0
+  local i
+  for i in $(seq 1 50); do
+    pactl info >/dev/null 2>&1 && break
+    sleep 0.2
+  done
+}
+
+# Waits until every listed sink is there (after the restart), up to 10 s
+channels_wait_sinks() {
+  ((DRY_RUN)) && return 0
+  local i s missing
+  for i in $(seq 1 50); do
+    missing=0
+    for s in "$@"; do channels_has_sink "$s" || missing=1; done
+    ((missing)) || return 0
+    sleep 0.2
+  done
+  return 1
+}
+
+# The shell only notices the new PipeWire after a restart of its own
+channels_restart_shell() {
+  if pgrep -x qs >/dev/null 2>&1 && [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
+    run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true
+    info "The shell restarted to pick up the new outputs"
+  fi
+}
+
+# Moves every app playing on <sink...> to <output>
+channels_move_apps() {
+  local output=$1 idx
+  shift
+  ((DRY_RUN)) && { info "would move the apps on ${*} to $output"; return 0; }
+  pactl -f json list sink-inputs 2>/dev/null | jq -r --argjson sinks "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
+    --argjson ids "$(pactl -f json list sinks 2>/dev/null | jq '[.[] | {(.index | tostring): .name}] | add // {}')" '
+    .[] | select((.properties["node.name"] // "") | startswith("facet-") | not)
+    | select(($ids[(.sink | tostring)] // "") as $s | $sinks | index($s)) | .index' 2>/dev/null \
+    | while read -r idx; do
+      pactl move-sink-input "$idx" "$output" 2>/dev/null || true
+    done
+}
+
+# Moves the channels' own loopback streams to <output> right away
+channels_move_loopbacks() {
+  local output=$1 idx
+  ((DRY_RUN)) && { info "would move the channels to $output"; return 0; }
+  pactl -f json list sink-inputs 2>/dev/null \
+    | jq -r '.[] | select((.properties["node.name"] // "") | test("^facet-.*\\.output$")) | .index' 2>/dev/null \
+    | while read -r idx; do
+      pactl move-sink-input "$idx" "$output" 2>/dev/null || true
+    done
+}
+
+# facet audio channels on [key...] [--output <sink>]
+channels_on() {
+  local output="" keys=() key label sink made existing list='[]' modules="" made_any=0 default=""
+  while (($#)); do
+    case $1 in
+      --output) output=${2:-}; [[ -n $output ]] || die "--output needs a sink name" "the names: pactl list short sinks"; shift ;;
+      --output=*) output=${1#--output=} ;;
+      *) keys+=("${1,,}") ;;
+    esac
+    shift
+  done
+  ((${#keys[@]})) || mapfile -t keys < <(channels_state_keys)
+  ((${#keys[@]})) || keys=("${CHANNELS_DEFAULT[@]}")
+  for key in "${keys[@]}"; do
+    [[ $key =~ ^[a-z][a-z0-9]{0,15}$ ]] || die "Not a channel name: $key" "letters and digits, e.g. facet audio channels on system game chat music"
+  done
+  if [[ " ${keys[*]} " != *" system "* ]]; then
+    warn "No system channel: apps that are not moved anywhere keep playing straight on the output"
+  fi
+  if goxlr_connected; then
+    warn "A GoXLR is connected; its channels stay the ones the shell uses unless you pick \"virtual\" in settings > sound"
+  fi
+
+  step "Sound channels"
+  output=$(channels_pick_output "$output")
+  [[ -n $output ]] || die "No output found to play the channels into" "is a sound device connected? pactl list short sinks"
+  info "Output: $output"
+
+  for key in "${keys[@]}"; do
+    label=${key^}
+    existing=$(channels_existing "$key")
+    if [[ -n $existing ]]; then
+      sink=$existing made=false
+      ok "$label: takes your existing sink $existing"
+    else
+      sink="facet-$key" made=true made_any=1
+      modules+=$(channels_module "$key" "$label" "$output")$'\n'
+      ok "$label: new sink $sink"
+    fi
+    list=$(jq -c --arg k "$key" --arg l "$label" --arg s "$sink" --argjson m "$made" \
+      '. + [{ key: $k, label: $l, sink: $s, made: $m }]' <<<"$list")
+    [[ $key == system ]] && default=$sink
+  done
+
+  if ((DRY_RUN)); then
+    ((made_any)) && info "would write $CHANNELS_CONF"
+    info "would write $CHANNELS_STATE"
+  else
+    if ((made_any)); then
+      mkdir -p "$(dirname "$CHANNELS_CONF")"
+      {
+        echo "# Written by \`facet audio channels on\`; \`facet audio channels off\` removes it."
+        echo "# One loopback per channel: a sink apps play into (facet-<key>) and a stream from it"
+        echo "# into the real output (facet-<key>.output). Change the output with"
+        echo "# \`facet audio channels output <sink>\`, the channels with \`facet audio channels on <keys>\`."
+        echo "context.modules = ["
+        printf '%s' "$modules"
+        echo "]"
+      } >"$CHANNELS_CONF"
+    else
+      rm -f "$CHANNELS_CONF"
+    fi
+    mkdir -p "$STATE_DIR"
+    jq -n --arg o "$output" --argjson c "$list" '{ version: 1, output: $o, channels: $c }' >"$CHANNELS_STATE"
+  fi
+
+  channels_restart_pipewire
+  # shellcheck disable=SC2046
+  if ! channels_wait_sinks $(jq -r '.channels[].sink' <<<"{\"channels\":$list}"); then
+    warn "Not every channel showed up in PipeWire; check: pactl list short sinks, journalctl --user -u pipewire"
+  fi
+  if [[ -n $default ]]; then
+    run pactl set-default-sink "$default" || warn "Could not make $default the default output"
+    ok "Default output: ${default} (System)"
+  fi
+  channels_restart_shell
+  ok "Sound channels on: ${keys[*]}"
+  hint "move apps in the app mixer; rules for apps in settings > sound; off again: facet audio channels off"
+}
+
+channels_off() {
+  step "Sound channels"
+  if ! channels_on_now && [[ ! -f $CHANNELS_CONF ]]; then
+    ok "No sound channels set up, nothing to remove"
+    return 0
+  fi
+  local output sinks=()
+  output=$(channels_state_output)
+  if [[ -z $output ]] || ! channels_has_sink "$output"; then
+    output=$(channels_sinks | grep -v -e '^facet-' -e '^frame-rec$' | head -n 1)
+  fi
+  [[ -f $CHANNELS_STATE ]] && mapfile -t sinks < <(jq -r '.channels[].sink' "$CHANNELS_STATE" 2>/dev/null)
+  # Apps first, so WirePlumber remembers the real output for them, not a channel that is gone
+  if [[ -n $output ]]; then
+    ((${#sinks[@]})) && channels_move_apps "$output" "${sinks[@]}"
+    run pactl set-default-sink "$output" || true
+    ok "Apps and the default output back on $output"
+  fi
+  run rm -f "$CHANNELS_CONF" "$CHANNELS_STATE" "$CHANNELS_ROUTES"
+  channels_restart_pipewire
+  [[ -n $output ]] && { run pactl set-default-sink "$output" >/dev/null 2>&1 || true; }
+  channels_restart_shell
+  ok "Sound channels removed"
+}
+
+# facet audio channels output <sink>: where the channels play into, now and after a restart
+channels_output() {
+  local want=${1:-} output
+  channels_on_now || die "No sound channels set up" "facet audio channels on"
+  [[ -n $want ]] || die "Name the output" "the names: pactl list short sinks"
+  output=$(channels_pick_output "$want")
+  if [[ -f $CHANNELS_CONF ]]; then
+    if ((DRY_RUN)); then
+      info "would point $CHANNELS_CONF at $output"
+    else
+      sed -i "s|^\(\s*target\.object = \)\"[^\"]*\"|\1\"$output\"|" "$CHANNELS_CONF"
+    fi
+  fi
+  if ((!DRY_RUN)); then
+    jq --arg o "$output" '.output = $o' "$CHANNELS_STATE" >"$CHANNELS_STATE.tmp" && mv "$CHANNELS_STATE.tmp" "$CHANNELS_STATE"
+  fi
+  channels_move_loopbacks "$output"
+  ok "Channels play into $output"
+}
+
+channels_status() {
+  step "Sound channels"
+  if goxlr_connected; then
+    ok "GoXLR connected: its channels come from GoXLR Utility"
+  fi
+  if ! channels_on_now; then
+    info "Virtual channels: not set up (facet audio channels on)"
+    return 0
+  fi
+  local key label sink made output
+  output=$(channels_state_output)
+  while IFS=$'\t' read -r key label sink made; do
+    if command -v pactl >/dev/null && channels_has_sink "$sink"; then
+      ok "$label → $sink$([[ $made == false ]] && echo " (yours, taken over)")"
+    else
+      warn "$label → $sink is missing in PipeWire (facet audio channels on sets it up again)"
+    fi
+  done < <(jq -r '.channels[] | [.key, .label, .sink, (.made | tostring)] | @tsv' "$CHANNELS_STATE" 2>/dev/null)
+  if [[ -n $output ]]; then
+    if command -v pactl >/dev/null && channels_has_sink "$output"; then ok "Output: $output"; else warn "Output $output is not there right now"; fi
+  fi
+  [[ -f $CHANNELS_CONF ]] && info "Config: ${CHANNELS_CONF/#"$HOME"/\~}"
+}
+
+# facet audio channels [on [key...] [--output <sink>]|off|output <sink>|status]
+cmd_audio() {
+  local what=${1:-} action=${2:-status}
+  case $what in
+    channels | ch) shift; shift || true ;;
+    "" | status) header; channels_status; return 0 ;;
+    *) die "Unknown: facet audio $what" "facet audio channels on|off|output <sink>|status" ;;
+  esac
+  header
+  case $action in
+    on | enable) channels_needs; channels_on "$@" ;;
+    off | disable | remove) channels_needs; channels_off ;;
+    output) channels_needs; channels_output "$@" ;;
+    status | "") channels_status ;;
+    *)
+      die "Unknown: facet audio channels $action" "$(did_you_mean "$action" on off output status)facet audio channels on|off|output <sink>|status"
+      ;;
+  esac
+}
+
+# The setup's question (default no) said yes. Run in a subshell by cmd_install, so a
+# missing piece only warns instead of ending the install.
+setup_channels() {
+  channels_needs
+  channels_on
 }
 
 # ── Login screen ────────────────────────────────────────────
@@ -2891,6 +3230,8 @@ LAYOUT_STATE="$STATE_DIR/layout"
 SETUP_PKGS=()
 WANT_CLAUDE=0
 WANT_GOXLR=0
+# Virtual sound channels (facet audio channels on), only when asked for
+WANT_CHANNELS=0
 PICKED_LAYOUT=""
 
 # TC-Helicon GoXLR (1220:8fe0) or GoXLR Mini (1220:8fe4) on USB
@@ -2953,6 +3294,15 @@ setup_wizard() {
   if goxlr_connected && ! command -v goxlr-daemon >/dev/null; then
     ok "GoXLR found, GoXLR Utility will be installed"
     WANT_GOXLR=1
+  fi
+
+  # Without a GoXLR: its channels as virtual outputs, only when picked (-y says no)
+  if ! goxlr_connected && [[ ! -f $CHANNELS_STATE ]]; then
+    local channels
+    channels=$(choose "Sound channels like a GoXLR? (any time: facet audio channels on|off)" \
+      "no|one output; the mixer moves apps between your sound devices" \
+      "yes|virtual System, Game, Chat and Music outputs: a fader each, a track each in recordings")
+    [[ $channels == yes ]] && WANT_CHANNELS=1
   fi
 
   # A connected AULA F75 gets frame-keyboard and the keyboard app
@@ -3139,8 +3489,8 @@ cmd_install() {
     setup_wizard
     pkgs=("${SETUP_PKGS[@]}")
   fi
-  # Modules, Dependencies, Theme, one per package, Claude Code, GoXLR, frame command
-  steps_total $((4 + ${#pkgs[@]} + WANT_CLAUDE + WANT_GOXLR))
+  # Modules, Dependencies, Theme, one per package, Claude Code, GoXLR, frame command, channels
+  steps_total $((4 + ${#pkgs[@]} + WANT_CLAUDE + WANT_GOXLR + WANT_CHANNELS))
   # Only the modules that are picked get cloned
   command -v git >/dev/null || install_deps git
   step "Modules"
@@ -3191,6 +3541,10 @@ cmd_install() {
 
   step "facet command"
   link_self
+  # Last: it restarts PipeWire (and a running shell); a problem only warns
+  if ((WANT_CHANNELS)); then
+    (setup_channels) || warn "The sound channels were not set up; try again with: facet audio channels on"
+  fi
   [[ -d $backup ]] && info "Old configs were moved to $backup"
   printf '\n%sDone.%s Open a new terminal to see the changes.\n\n' "$c_ok" "$c_reset"
 }
@@ -3544,6 +3898,9 @@ cmd_status() {
   if goxlr_connected && ! command -v goxlr-daemon >/dev/null; then
     warn "A GoXLR is connected but GoXLR Utility is missing (paru -S goxlr-utility)"
   fi
+  if channels_on_now; then
+    ok "Sound channels: $(jq -r '[.channels[].label] | join(", ")' "$CHANNELS_STATE" 2>/dev/null) (facet audio channels status)"
+  fi
   if keyboard_connected; then
     if [[ $(link_state keyboard) != linked ]]; then
       warn "An AULA F75 is connected but the keyboard package is not installed (facet install keyboard)"
@@ -3674,6 +4031,7 @@ main() {
     restore) cmd_restore "${args[@]}" ;;
     grub) cmd_grub "${args[@]}" ;;
     goxlr) cmd_goxlr "${args[@]}" ;;
+    audio) cmd_audio "${args[@]}" ;;
     login) cmd_login "${args[@]}" ;;
     boot) cmd_boot "${args[@]}" ;;
     theme) cmd_theme "${args[@]}" ;;

@@ -26,6 +26,17 @@ _facet() {
             boot) words="install check remove" ;;
             layout) words="tiling canvas" ;;
             style) words="list $(facet __complete styles 2>/dev/null)" ;;
+            audio)
+                if ((COMP_CWORD == 2)); then
+                    words="channels status"
+                elif ((COMP_CWORD == 3)) && [[ $prev == channels ]]; then
+                    words="on off output status"
+                elif [[ $prev == output || $prev == --output ]]; then
+                    words=$(facet __complete sinks 2>/dev/null)
+                elif [[ ${COMP_WORDS[3]:-} == on ]]; then
+                    words="system game chat music --output"
+                fi
+                ;;
             spotify) words="login logout status" ;;
             wallpaper)
                 if ((COMP_CWORD == 2)); then

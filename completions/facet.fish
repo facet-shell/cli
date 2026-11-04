@@ -5,7 +5,7 @@ function __facet_list
     facet __complete $argv 2>/dev/null
 end
 
-set -l commands install add update remove backup restore theme style grub boot goxlr login wallpaper spotify layout status clean help
+set -l commands install add update remove backup restore theme style grub boot goxlr audio login wallpaper spotify layout status clean help
 
 complete -c facet -f
 complete -c facet -s n -l dry-run -d "print what would happen, change nothing"
@@ -22,6 +22,7 @@ complete -c facet -n "not __fish_seen_subcommand_from $commands" -a theme -d "li
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a grub -d "theme the GRUB boot menu"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a boot -d "boot splash and console colors"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a goxlr -d "GoXLR lights in the theme's colors"
+complete -c facet -n "not __fish_seen_subcommand_from $commands" -a audio -d "virtual sound channels without a GoXLR"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a login -d "the lockscreen look as the login screen"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a wallpaper -d "wallpaper backends"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a spotify -d "Spotify Web API for the launcher"
@@ -48,3 +49,9 @@ complete -c facet -n "__fish_seen_subcommand_from spotify" -a "login logout stat
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and not __fish_seen_subcommand_from list set option backend apply pause resume stop" -a "list set option backend apply pause resume stop"
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and __fish_seen_subcommand_from backend" -a "both mpv image"
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and __fish_seen_subcommand_from set" -F
+
+# audio channels on|off|output <sink>|status
+complete -c facet -n "__fish_seen_subcommand_from audio; and not __fish_seen_subcommand_from channels status" -a "channels status"
+complete -c facet -n "__fish_seen_subcommand_from audio; and __fish_seen_subcommand_from channels; and not __fish_seen_subcommand_from on off output status" -a "on off output status"
+complete -c facet -n "__fish_seen_subcommand_from audio; and __fish_seen_subcommand_from on; and not __fish_seen_subcommand_from --output" -a "system game chat music --output" -d channel
+complete -c facet -n "__fish_seen_subcommand_from audio; and __fish_seen_subcommand_from output --output" -a "(__facet_list sinks)" -d output

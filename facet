@@ -17,6 +17,7 @@
 #   facet login [install|auto|remove] the lockscreen look as the login screen, or straight into Hyprland (greetd, needs sudo)
 #   facet wallpaper <args…>      passed to frame-wallpaper (backend, set, apply, …)
 #   facet spotify <args…>        passed to frame-spotify (login, logout, status)
+#   facet style [name|list]      the look of the whole desktop: tui (theme is the colors)
 #   facet layout [tiling|canvas] Hyprland tiling or the infinite canvas
 #   facet status                 show what is linked and what is missing
 #   facet clean                  free disk space: caches, orphans, old backups, logs
@@ -39,7 +40,7 @@ DEFAULT_THEME=periwinkle
 # facet is split into repos (github.com/facet-shell): this CLI with the themes, and one
 # repo per module. Only the modules you pick are cloned (shallow) into MODULES_DIR; each
 # holds one or more Stow packages plus templates/ for the files with colors. core is what
-# every look shares (services, bridges, config, Hyprland, wallpapers); a look (look-tui)
+# every style shares (services, bridges, config, Hyprland, wallpapers); a style (style-tui)
 # is the bar, panels and popups on top, linked into the same folders (--no-folding).
 ORG_URL="${FACET_ORG_URL:-https://github.com/facet-shell}"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/frameshell"
@@ -47,17 +48,17 @@ MODULES_DIR="$DATA_DIR/modules"
 # Your own pictures (fastfetch logo, wallpapers); never part of a repo
 ASSETS_DIR="$DATA_DIR/assets"
 
-MODULES=(core look-tui terminal spotify discord steam keyboard zed zen dolphin)
+MODULES=(core style-tui terminal spotify discord steam keyboard zed zen dolphin)
 declare -A MODULE_OF=(
   [quickshell]=core [hypr]=core [wallpaper]=core
-  [tui]=look-tui [gtk]=look-tui
+  [tui]=style-tui [gtk]=style-tui
   [ghostty]=terminal [fish]=terminal [starship]=terminal [fastfetch]=terminal
   [spicetify]=spotify [vencord]=discord [steam]=steam [keyboard]=keyboard
   [zed]=zed [zen]=zen [dolphin]=dolphin
 )
 declare -A MODULE_DESC=(
-  [core]="what every look shares: services and bridges, settings, Hyprland config, wallpapers"
-  [look-tui]="the tui look: bar, launcher, lockscreen and panels in square frames, login and boot screens"
+  [core]="what every style shares: services and bridges, settings, Hyprland config, wallpapers"
+  [style-tui]="the tui style: bar, launcher, lockscreen and panels in square frames, login and boot screens"
   [terminal]="Ghostty, fish, Starship, fastfetch"
   [spotify]="Spotify themed, search and controls in the launcher"
   [discord]="Vesktop themed, calls and DMs in the shell"
@@ -89,19 +90,19 @@ module_packages() {
   return 0
 }
 
-# The look in use (tui for now): its module holds the bar, panels and popups as the package
+# The style in use (tui for now): its module holds the bar, panels and popups as the package
 # of the same name, and the login and boot screens
-LOOK_STATE="$STATE_DIR/look"
-current_look() {
-  local look=tui
-  [[ -f $LOOK_STATE ]] && read -r look <"$LOOK_STATE"
-  echo "${look:-tui}"
+STYLE_STATE="$STATE_DIR/style"
+current_style() {
+  local style=tui
+  [[ -f $STYLE_STATE ]] && read -r style <"$STYLE_STATE"
+  echo "${style:-tui}"
 }
-look_dir() { module_dir "look-$(current_look)"; }
-look_theme_file() { echo "$(pkg_dir "$(current_look)")/.config/quickshell/config/Theme.qml"; }
+style_dir() { module_dir "style-$(current_style)"; }
+style_theme_file() { echo "$(pkg_dir "$(current_style)")/.config/quickshell/config/Theme.qml"; }
 
-# Before facet, core and the tui look were one module called shell. Its links go, the
-# folder becomes core (the repo was renamed on GitHub), the tui look is fetched next to it;
+# Before facet, core and the tui style were one module called shell. Its links go, the
+# folder becomes core (the repo was renamed on GitHub), the tui style is fetched next to it;
 # what was linked before is linked again by the caller (facet update, facet install).
 # Prints the packages that were linked, nothing when there was nothing to move.
 migrate_shell_module() {
@@ -109,10 +110,10 @@ migrate_shell_module() {
   old=$(module_dir shell) new=$(module_dir core)
   [[ -d $old/.git && ! -e $new ]] || return 0
   if ((DRY_RUN)); then
-    info "would move the shell module to core and look-tui" >&2
+    info "would move the shell module to core and style-tui" >&2
     return 0
   fi
-  info "The shell module is core and look-tui now; moving it over" >&2
+  info "The shell module is core and style-tui now; moving it over" >&2
   for f in quickshell hypr wallpaper gtk; do
     [[ -n $(find "$HOME/.config" "$HOME/.local/bin" "$HOME/.local/share/applications" -type l -lname "*modules/shell/$f/*" -print -quit 2>/dev/null) ]] && pkgs+=("$f")
   done
@@ -121,23 +122,23 @@ migrate_shell_module() {
   mv "$old" "$new"
   git -C "$new" remote set-url origin "$ORG_URL/core.git"
   git -C "$new" pull --ff-only --quiet || warn "Could not pull core; facet update tries again" >&2
-  # Written by facet theme into the old module; the tui look has its own now
+  # Written by facet theme into the old module; the tui style has its own now
   rm -rf "$new/quickshell/.config/quickshell/config/Theme.qml" "$new/gtk" "$new/plymouth" "$new/grub"
-  ensure_module look-tui >&2
+  ensure_module style-tui >&2
   # The login screen's own settings (who logs in, what starts) move with it
   if [[ -f $new/greeter/greeter.json ]]; then
-    mkdir -p "$(module_dir look-tui)/greeter"
-    mv "$new/greeter/greeter.json" "$(module_dir look-tui)/greeter/greeter.json"
+    mkdir -p "$(module_dir style-tui)/greeter"
+    mv "$new/greeter/greeter.json" "$(module_dir style-tui)/greeter/greeter.json"
   fi
   rm -rf "$new/greeter"
-  # gtk lives in the look now; the bar and panels come with quickshell
+  # gtk lives in the style now; the bar and panels come with quickshell
   for f in "${pkgs[@]}"; do
     case $f in
       quickshell) echo quickshell; echo tui ;;
       *) echo "$f" ;;
     esac
   done
-  ok "Moved: core and look-tui" >&2
+  ok "Moved: core and style-tui" >&2
 }
 
 # Clones a module the first time it is needed (shallow: only the newest version)
@@ -167,7 +168,7 @@ declare -A DEPS=(
   # cutting screenshots out of the frozen screen and the editors' export (the emoji list, the
   # alarm sound, file search, clipboard history and the update check are the shell's own)
   [quickshell]="quickshell wl-clipboard libpulse pciutils qt6-websockets qt6-imageformats grim wf-recorder ffmpeg"
-  # The tui look's fonts; noto-fonts-emoji: the launcher's emoji
+  # The tui style's fonts; noto-fonts-emoji: the launcher's emoji
   [tui]="ttf-jetbrains-mono ttf-nerd-fonts-symbols-mono noto-fonts-emoji"
   # Idle lock and screen off live in the shell (lockscreen/Lock.qml), no hypridle
   [hypr]=""
@@ -659,7 +660,7 @@ choose() {
 }
 
 # Every command, for the help, the main menu's checks and "did you mean"
-COMMANDS=(install add update remove backup restore theme grub boot goxlr login wallpaper spotify layout status clean help)
+COMMANDS=(install add update remove backup restore theme style grub boot goxlr login wallpaper spotify layout status clean help)
 
 usage() {
   header
@@ -678,6 +679,7 @@ usage() {
     ${s}theme${r}                     write every app color file from the active theme
     ${s}theme set${r} [name]          switch every app to another theme (no name: pick one)
     ${s}theme list${r} · ${s}check${r}        the themes, or only report files that are out of date
+    ${s}style${r} [name|list]       the look of the desktop: tui (theme is its colors)
     ${s}layout${r} [tiling|canvas]    normal tiling or the infinite canvas
     ${s}status${r}                    what is linked and what is missing
     ${m}e.g. facet theme set sakura${r}
@@ -720,10 +722,11 @@ main_menu() {
   # Nothing there yet: install; otherwise the usual update
   [[ -n $(installed_modules) ]] && start=2
   opts=(
-    "install|set up frameshell, or more modules"
+    "install|set up facet, or more modules"
     "add|add apps: Spotify, Vesktop, Steam, Zed, Dolphin, Zen"
     "update|pull, back up, relink, re-apply the theme"
     "theme|switch the colors (now: $(current_theme))"
+    "style|switch the look of the desktop (now: $(current_style))"
     "layout|tiling or the infinite canvas (now: $(current_layout))"
     "remove|unlink and delete modules"
     "status|what is linked and what is missing"
@@ -734,6 +737,7 @@ main_menu() {
   MENU_ARGS=()
   case $pick in
     theme) MENU_ARGS=(set) ;;
+    style) MENU_ARGS=(set) ;;
     layout)
       local now
       now=$(current_layout)
@@ -1000,6 +1004,7 @@ cmd_complete() {
     packages) printf '%s\n' "${PACKAGES[@]}" ;;
     installed) installed_packages ;;
     themes) theme_ids ;;
+    styles) style_names ;;
     backups) list_backups ;;
   esac
   return 0
@@ -1638,7 +1643,7 @@ grub_apply() {
   theme=$(current_theme)
   line_color=$(theme_hex "$theme" surface2)
   select_color=$(theme_hex "$theme" primary)
-  [[ -f $(look_dir)/grub/frameshell/theme.txt ]] || theme_render "$theme" 0 quiet
+  [[ -f $(style_dir)/grub/frameshell/theme.txt ]] || theme_render "$theme" 0 quiet
   for f in border select_c select_e select_n select_ne select_s select_se; do
     png_solid "$tmp/$f.png" 1 "$line_color"
   done
@@ -1647,7 +1652,7 @@ grub_apply() {
     png_solid "$tmp/$f.png" 3 "$select_color"
   done
   run sudo install -d "$GRUB_THEME_DIR"
-  run sudo cp "$(look_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
+  run sudo cp "$(style_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
   rm -rf "$tmp"
   ok "Copied to $GRUB_THEME_DIR"
 
@@ -1817,7 +1822,7 @@ cmd_login() {
   [[ -f $GREETD_CONFIG ]] || die "greetd is not the display manager here ($GREETD_CONFIG is missing)" "facet login only works with greetd; install and enable greetd first"
   case $action in
     install)
-      local user command theme_file="$(look_theme_file)"
+      local user command theme_file="$(style_theme_file)"
       user=$(id -un)
       command=$(login_session_command)
       # Everything the greeter needs, checked before greetd is touched: a broken greeter
@@ -1836,11 +1841,11 @@ cmd_login() {
       confirm "Set up the lockscreen look as the login screen?" || exit 0
       step "Greeter files"
       run sudo install -d -m 755 "$GREETER_DIR" "$GREETER_DIR/ui"
-      run sudo install -m 644 "$(look_dir)/greeter/shell.qml" "$GREETER_DIR/shell.qml"
-      run sudo install -m 644 "$(look_dir)/greeter/ui/Frame.qml" "$GREETER_DIR/ui/Frame.qml"
+      run sudo install -m 644 "$(style_dir)/greeter/shell.qml" "$GREETER_DIR/shell.qml"
+      run sudo install -m 644 "$(style_dir)/greeter/ui/Frame.qml" "$GREETER_DIR/ui/Frame.qml"
       # The active theme, as the shell has it rendered right now
-      run sudo install -m 644 "$(look_theme_file)" "$GREETER_DIR/ui/Theme.qml"
-      run sudo install -m 755 "$(look_dir)/greeter/frame-greeter-session" "$GREETER_DIR/frame-greeter-session"
+      run sudo install -m 644 "$(style_theme_file)" "$GREETER_DIR/ui/Theme.qml"
+      run sudo install -m 755 "$(style_dir)/greeter/frame-greeter-session" "$GREETER_DIR/frame-greeter-session"
       local tmp
       tmp=$(mktemp)
       printf '{ "user": "%s", "command": ["%s"] }\n' "$user" "$command" >"$tmp"
@@ -1964,7 +1969,7 @@ rebuild_initramfs() {
 # The installed splash differs from what the templates render now (new version or theme)
 boot_splash_outdated() {
   local f src
-  src=$(look_dir)/plymouth/frameshell
+  src=$(style_dir)/plymouth/frameshell
   [[ -d $PLYMOUTH_DIR ]] || return 1
   for f in frameshell.plymouth frameshell.script; do
     cmp -s "$src/$f" "$PLYMOUTH_DIR/$f" || return 0
@@ -2044,7 +2049,7 @@ boot_splash_install() {
   fi
   local theme tmp f
   theme=$(current_theme)
-  [[ -f $(look_dir)/plymouth/frameshell/frameshell.script ]] || theme_render "$theme" 0 quiet
+  [[ -f $(style_dir)/plymouth/frameshell/frameshell.script ]] || theme_render "$theme" 0 quiet
   tmp=$(mktemp -d)
   png_solid "$tmp/line.png" 1 "$(theme_hex "$theme" frame)"
   png_solid "$tmp/fill.png" 1 "$(theme_hex "$theme" primary)"
@@ -2052,7 +2057,7 @@ boot_splash_install() {
   png_solid "$tmp/bg.png" 1 "$(theme_hex "$theme" bg)"
   run sudo install -d "$PLYMOUTH_DIR"
   for f in frameshell.plymouth frameshell.script; do
-    run sudo install -m 644 "$(look_dir)/plymouth/frameshell/$f" "$PLYMOUTH_DIR/$f"
+    run sudo install -m 644 "$(style_dir)/plymouth/frameshell/$f" "$PLYMOUTH_DIR/$f"
   done
   run sudo install -m 644 "$tmp"/*.png "$PLYMOUTH_DIR/"
   rm -rf "$tmp"
@@ -2459,7 +2464,7 @@ theme_reload() {
   fi
   # The login screen keeps its own copy of the theme in /usr/share
   if [[ -d $GREETER_DIR ]] && ((!DRY_RUN)); then
-    if sudo -n install -m 644 "$(look_theme_file)" "$GREETER_DIR/ui/Theme.qml" 2>/dev/null; then
+    if sudo -n install -m 644 "$(style_theme_file)" "$GREETER_DIR/ui/Theme.qml" 2>/dev/null; then
       ok "Login screen colors updated"
     else
       info "Login screen: run facet login to give it the new colors (needs sudo)"
@@ -2778,13 +2783,74 @@ cmd_layout() {
   return 0
 }
 
+# The styles there are: every module called style-<name>
+style_names() {
+  local m
+  for m in "${MODULES[@]}"; do [[ $m == style-* ]] && echo "${m#style-}"; done
+  return 0
+}
+
+# facet style [list|set|<name>]: the look of the whole desktop (bar, panels, popups, login
+# and boot screens); facet theme is its colors. The old style's packages are unlinked, the
+# new one's linked into the same folders, the theme written for it, the shell restarted.
+cmd_style() {
+  local want=${1:-} now names=() p pkgs=()
+  now=$(current_style)
+  mapfile -t names < <(style_names)
+  if [[ $want == set ]]; then
+    local opts=() n start=0 i=0
+    for n in "${names[@]}"; do
+      [[ $n == "$now" ]] && start=$i
+      opts+=("$n|${MODULE_DESC[style-$n]:-}")
+      i=$((i + 1))
+    done
+    want=$(menu "Which style? (now: $now)" "$start" "${opts[@]}") || exit 0
+  fi
+  if [[ -z $want || $want == list ]]; then
+    for n in "${names[@]}"; do
+      if [[ $n == "$now" ]]; then ok "$n (in use)"; else info "$n"; fi
+    done
+    info "Switch with: facet style <name>; the colors stay (facet theme)"
+    return 0
+  fi
+  [[ " ${names[*]} " == *" $want "* ]] || die "Unknown style: $want" "$(did_you_mean "$want" "${names[@]}")facet style list shows them"
+  if [[ $want == "$now" ]]; then
+    ok "Already $now"
+    return 0
+  fi
+  need_arch
+  header
+  ensure_module "style-$want"
+  mapfile -t pkgs < <(module_packages "style-$want")
+  step "Backup"
+  snapshot_pkgs style "${pkgs[@]}"
+  step "Style $want"
+  # The old style's bar and panels go first; both link into ~/.config/quickshell
+  for p in $(module_packages "style-$now"); do
+    [[ $(link_state "$p") == missing ]] || stow_pkg -D "$p"
+  done
+  run mkdir -p "$STATE_DIR"
+  if ((DRY_RUN)); then info "would write $want to $STYLE_STATE"; else echo "$want" >"$STYLE_STATE"; fi
+  theme_render "$(current_theme)" 0 quiet
+  for p in "${pkgs[@]}"; do
+    link_pkg "$p" "$LAST_BACKUP"
+    run_post "$p"
+  done
+  # A new shell.qml means a new shell; the watchdog restarts it cleanly
+  if [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
+    run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true
+  fi
+  ok "Style: $want"
+  info "The login and boot screens follow with: facet login and facet boot (sudo)"
+}
+
 # Package and module names as packages: "spotify" is the spicetify package, "shell" all of
 # quickshell, hypr, wallpaper and gtk
 expand_targets() {
   local a
   for a in "$@"; do
-    # "shell" is still the whole desktop: core and the look in use
-    if [[ $a == shell ]]; then module_packages core; module_packages "look-$(current_look)"
+    # "shell" is still the whole desktop: core and the style in use
+    if [[ $a == shell ]]; then module_packages core; module_packages "style-$(current_style)"
     elif is_module "$a"; then module_packages "$a"
     else echo "$a"; fi
   done | awk '!seen[$0]++'
@@ -2799,7 +2865,7 @@ modules_of() {
 cmd_install() {
   need_arch
   local pkgs=() p m extra=()
-  # An install from before facet: shell becomes core and look-tui first (linked again
+  # An install from before facet: shell becomes core and style-tui first (linked again
   # with the rest by facet update)
   migrate_shell_module >/dev/null
   mapfile -t pkgs < <(expand_targets "$@")
@@ -2871,10 +2937,10 @@ grub_refresh_wanted() { [[ -d $GRUB_THEME_DIR ]] && command -v grub-mkconfig >/d
 cmd_update() {
   need_arch
   local requested=("$@") pkgs=("$@") moved=() p
-  # An install from before facet: shell becomes core and look-tui first
+  # An install from before facet: shell becomes core and style-tui first
   mapfile -t moved < <(migrate_shell_module)
-  # Core without a look shows nothing; a move whose clone failed gets it here (or says why)
-  if has_module core && ! has_module look-tui; then ensure_module look-tui; fi
+  # Core without a style shows nothing; a move whose clone failed gets it here (or says why)
+  if has_module core && ! has_module style-tui; then ensure_module style-tui; fi
   ((${#pkgs[@]})) || mapfile -t pkgs < <(installed_packages)
   if ((${#requested[@]} == 0)); then
     for p in "${moved[@]}"; do [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p"); done
@@ -3349,6 +3415,7 @@ main() {
     wallpaper | wp) cmd_wallpaper "${args[@]}" ;;
     spotify) cmd_spotify "${args[@]}" ;;
     layout) cmd_layout "${args[@]}" ;;
+    style) cmd_style "${args[@]}" ;;
     __complete) cmd_complete "${args[@]}" ;;
     status | st | doctor) cmd_status ;;
     clean) cmd_clean ;;

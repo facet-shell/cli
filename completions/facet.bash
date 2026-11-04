@@ -25,6 +25,7 @@ _facet() {
             grub | login) words="install remove" ;;
             boot) words="install check remove" ;;
             layout) words="tiling canvas" ;;
+            style) words="list $(facet __complete styles 2>/dev/null)" ;;
             spotify) words="login logout status" ;;
             wallpaper)
                 if ((COMP_CWORD == 2)); then

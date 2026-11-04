@@ -5,7 +5,7 @@ function __facet_list
     facet __complete $argv 2>/dev/null
 end
 
-set -l commands install add update remove backup restore theme grub boot goxlr login wallpaper spotify layout status clean help
+set -l commands install add update remove backup restore theme style grub boot goxlr login wallpaper spotify layout status clean help
 
 complete -c facet -f
 complete -c facet -s n -l dry-run -d "print what would happen, change nothing"
@@ -26,6 +26,7 @@ complete -c facet -n "not __fish_seen_subcommand_from $commands" -a login -d "th
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a wallpaper -d "wallpaper backends"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a spotify -d "Spotify Web API for the launcher"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a layout -d "tiling or the infinite canvas"
+complete -c facet -n "not __fish_seen_subcommand_from $commands" -a style -d "the look of the desktop"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a status -d "what is linked and what is missing"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a clean -d "free disk space"
 complete -c facet -n "not __fish_seen_subcommand_from $commands" -a help -d "all commands"
@@ -42,6 +43,7 @@ complete -c facet -n "__fish_seen_subcommand_from theme; and not __fish_seen_sub
 complete -c facet -n "__fish_seen_subcommand_from grub login" -a "install remove"
 complete -c facet -n "__fish_seen_subcommand_from boot" -a "install check remove"
 complete -c facet -n "__fish_seen_subcommand_from layout" -a "tiling canvas"
+complete -c facet -n "__fish_seen_subcommand_from style" -a "list (__facet_list styles)" -d style
 complete -c facet -n "__fish_seen_subcommand_from spotify" -a "login logout status"
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and not __fish_seen_subcommand_from list set option backend apply pause resume stop" -a "list set option backend apply pause resume stop"
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and __fish_seen_subcommand_from backend" -a "both mpv image"

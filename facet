@@ -3911,7 +3911,9 @@ grub_refresh_wanted() { [[ -d $GRUB_THEME_DIR ]] && command -v grub-mkconfig >/d
 
 cmd_update() {
   need_arch
-  local requested=("$@") pkgs=("$@") moved=() p
+  local requested=("$@") pkgs=() moved=() p
+  # Module names too, like install and remove: "facet update spotify" is what the hints say
+  (($#)) && mapfile -t pkgs < <(expand_targets "$@")
   # An install from before facet: shell becomes core and style-tui first
   mapfile -t moved < <(migrate_shell_module)
   # Core without a style shows nothing; a move whose clone failed gets it here (or says why)

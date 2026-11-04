@@ -1548,8 +1548,14 @@ post_zen() {
   fi
   if confirm "Make Zen the default browser?"; then
     if command -v xdg-settings >/dev/null || ((DRY_RUN)); then
-      run xdg-settings set default-web-browser zen.desktop
-      ok "Zen is the default browser"
+      # xdg-settings refuses while $BROWSER is set; that is a warning, not a reason to stop the update
+      if run xdg-settings set default-web-browser zen.desktop; then
+        ok "Zen is the default browser"
+      elif [[ -n ${BROWSER:-} ]]; then
+        warn "\$BROWSER is set ($BROWSER), so xdg-settings leaves the default browser alone; set BROWSER=zen-browser there instead"
+      else
+        warn "xdg-settings could not make Zen the default browser"
+      fi
     else
       warn "xdg-settings not found (xdg-utils)"
     fi

@@ -1761,7 +1761,7 @@ search_menu() {
 # How to ask for a board that is not in the registry
 keyboard_request_hint() {
   info "Ask for your keyboard on the facet board: https://github.com/orgs/facet-shell/projects/1"
-  info "(new issue, the \"Keyboard support\" form). Put in the model, what lsusb shows with the"
+  info "(new issue, the Idea form, \"Keyboard support: <model>\"). Put in the model, what lsusb shows with the"
   info "keyboard plugged in (cable and dongle) and a link to the vendor's Windows app."
   info "frame-keyboard sends nothing to a board that is not in the list."
 }

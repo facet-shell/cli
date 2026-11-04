@@ -1642,7 +1642,13 @@ keyboard_connected() {
 
 keyboard_saved() {
   local b=""
-  [[ -f $KEYBOARD_CHOICE ]] && read -r b <"$KEYBOARD_CHOICE"
+  if [[ -f $KEYBOARD_CHOICE ]]; then
+    read -r b <"$KEYBOARD_CHOICE"
+  elif [[ -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]]; then
+    # Before the board registry frame-keyboard knew only the AULA F75, and its udev rule is still
+    # there; the plugged-in guess cannot tell it apart (every g5kb board is 258a:010c)
+    b=aula-f75
+  fi
   echo "$b"
 }
 
@@ -1880,11 +1886,16 @@ keyboard_udev() {
 
 # udev rules, then which board you have (asked once; facet keyboard set changes it)
 post_keyboard() {
-  keyboard_udev
   local saved picked
+  # Read before keyboard_udev: it removes the old F75 rule that keyboard_saved recognizes
   saved=$(keyboard_saved)
+  keyboard_udev
   if [[ -n $saved && -f $(keyboard_boards_dir)/$saved.json ]]; then
-    ok "Keyboard: $(keyboard_name "$saved") (change it: facet keyboard set)"
+    if [[ -f $KEYBOARD_CHOICE ]]; then
+      ok "Keyboard: $(keyboard_name "$saved") (change it: facet keyboard set)"
+    else
+      keyboard_save "$saved"
+    fi
   elif command -v jq >/dev/null; then
     picked=$(keyboard_pick)
     [[ -z $picked ]] || keyboard_save "$picked"

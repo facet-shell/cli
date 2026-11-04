@@ -3292,16 +3292,33 @@ theme_templates() {
     dir="$(module_dir "$m")/templates"
     [[ -d $dir ]] || continue
     if [[ $m == style-* ]]; then
-      [[ $m == "style-$style" || $m == "style-$screens" ]] || continue
-      (cd "$dir" && find . -type f | sed 's|^\./||' | sort) | while IFS= read -r rel; do
-        printf '%s\t%s\t%s\n' "$m" "$rel" "$rel"
-      done
+      if [[ $m == "style-$style" || $m == "style-$screens" ]]; then
+        (cd "$dir" && find . -type f | sed 's|^\./||' | sort) | while IFS= read -r rel; do
+          printf '%s\t%s\t%s\n' "$m" "$rel" "$rel"
+        done
+      else
+        # A style not in use still owns packages every style shares (style-tui's gtk); their
+        # files follow the theme, its own bar and screens do not
+        local pkgs
+        pkgs=" $(module_packages "$m" | tr '\n' ' ') "
+        (cd "$dir" && find . -type f | sed 's|^\./||' | sort) | while IFS= read -r rel; do
+          first=${rel%%/*}
+          if [[ $pkgs == *" $first "* && $first != "${m#style-}" ]]; then
+            printf '%s\t%s\t%s\n' "$m" "$rel" "$rel"
+          fi
+        done
+      fi
       continue
     fi
     (cd "$dir" && find . -type f | sed 's|^\./||' | sort) | while IFS= read -r rel; do
       first=${rel%%/*}
+      # An if, not "[[ … ]] && printf": as the loop's last command a false test made the
+      # pipeline fail, and set -e ended the whole list after the first module whose last
+      # template belongs to the other style (every app module under bloom)
       if [[ $styles == *" $first "* ]]; then
-        [[ $first == "$style" ]] && printf '%s\t%s\t%s\n' "$m" "$rel" "${rel#*/}"
+        if [[ $first == "$style" ]]; then
+          printf '%s\t%s\t%s\n' "$m" "$rel" "${rel#*/}"
+        fi
       else
         printf '%s\t%s\t%s\n' "$m" "$rel" "$rel"
       fi

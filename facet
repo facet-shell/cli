@@ -3905,6 +3905,15 @@ cmd_update() {
   ((${#pkgs[@]})) || mapfile -t pkgs < <(installed_packages)
   if ((${#requested[@]} == 0)); then
     for p in "${moved[@]}"; do [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p"); done
+    # core and the style in use are never optional: a move whose update stopped half way left
+    # them without links, and installed_packages only sees linked packages
+    local m
+    for m in core "style-$(current_style)"; do
+      has_module "$m" || continue
+      while IFS= read -r p; do
+        [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p")
+      done < <(module_packages "$m")
+    done
   fi
   ((${#pkgs[@]})) || die "Nothing installed yet" "start with: facet install"
 

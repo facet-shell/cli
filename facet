@@ -1593,7 +1593,7 @@ KEYBOARD_RULE=70-facet-keyboards.rules
 KEYBOARD_RULE_OLD=70-frameshell-aula-f75.rules
 KEYBOARD_CHOICE="$STATE_DIR/keyboard/board"
 # USB ids for the setup before the keyboard module is downloaded; the registry wins once it is there
-KEYBOARD_IDS_FALLBACK="258a:010c 3554:fa09"
+KEYBOARD_IDS_FALLBACK="258a:010c 3554:fa09 0c45:800a"
 
 keyboard_boards_dir() { echo "$(pkg_dir keyboard)/.local/share/frameshell/keyboard/boards"; }
 keyboard_tool() { echo "$(pkg_dir keyboard)/.local/bin/frame-keyboard"; }
@@ -1602,9 +1602,9 @@ keyboard_tool() { echo "$(pkg_dir keyboard)/.local/bin/frame-keyboard"; }
 keyboard_ids() {
   local dir
   dir=$(keyboard_boards_dir)
-  if compgen -G "$dir/*.json" >/dev/null; then
-    grep -oh '"vid": *"[0-9a-fA-F]\{4\}", *"pid": *"[0-9a-fA-F]\{4\}"' "$dir"/*.json \
-      | sed 's/"vid": *"\(....\)", *"pid": *"\(....\)"/\1:\2/' | tr 'A-F' 'a-f'
+  # An id a board borrows from another vendor ("udev": false) does not count as that board
+  if compgen -G "$dir/*.json" >/dev/null && command -v jq >/dev/null; then
+    jq -r '.usb[] | select(.udev != false) | "\(.vid):\(.pid)"' "$dir"/*.json | tr 'A-F' 'a-f'
   else
     printf '%s\n' $KEYBOARD_IDS_FALLBACK
   fi | awk '!seen[$0]++'
@@ -1641,7 +1641,7 @@ keyboard_board_rows() {
   dir=$(keyboard_boards_dir)
   compgen -G "$dir/*.json" >/dev/null || return 0
   jq -r '[.id, .vendor, .name, (if .tested then "tested" else "untested" end),
-          ([.usb[] | "\(.vid):\(.pid)"] | unique | join(" ")), ((.aliases // []) | join(", "))] | @tsv' \
+          ([.usb[] | select(.udev != false) | "\(.vid):\(.pid)"] | unique | join(" ")), ((.aliases // []) | join(", "))] | @tsv' \
     "$dir"/*.json | sort -t $'\t' -k2,2f -k3,3f
 }
 

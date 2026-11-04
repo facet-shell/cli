@@ -115,6 +115,45 @@ screens_dir() {
 }
 screens_theme_file() { echo "$(pkg_dir "$(screens_style)")/.config/quickshell/config/Theme.qml"; }
 
+# A style's greeter that lists its files (greeter/files: "<destination> <source>" per line;
+# greeter/… from the style's folder, package/… from its Quickshell package, theme the
+# rendered Theme.qml). tui's greeter has no list and is installed the old way.
+greeter_has_manifest() { [[ -f $(screens_dir)/greeter/files ]]; }
+greeter_install_manifest() {
+  local src pkg dest from mode
+  src=$(screens_dir) pkg="$(pkg_dir "$(screens_style)")/.config/quickshell"
+  run sudo install -d -m 755 "$GREETER_DIR"
+  # What the other style left there
+  run sudo rm -rf "$GREETER_DIR/ui" "$GREETER_DIR/config" "$GREETER_DIR/components" "$GREETER_DIR/lockscreen"
+  while read -r dest from; do
+    [[ -z $dest || $dest == \#* ]] && continue
+    case $from in
+      theme) from=$(screens_theme_file) ;;
+      greeter/*) from=$src/$from ;;
+      package/*) from=$pkg/${from#package/} ;;
+    esac
+    mode=644
+    [[ $dest == frame-greeter-session ]] && mode=755
+    run sudo install -D -m "$mode" "$from" "$GREETER_DIR/$dest"
+  done <"$src/greeter/files"
+}
+# Where the login screen keeps its copy of the theme
+greeter_theme_dest() {
+  if greeter_has_manifest; then
+    awk '$2 == "theme" { print $1; exit }' "$(screens_dir)/greeter/files"
+  else
+    echo ui/Theme.qml
+  fi
+}
+
+# The UI font of the style in use: tui is all JetBrains Mono, bloom's text is Rubik
+style_ui_font() {
+  case $(current_style) in
+    bloom) echo Rubik ;;
+    *) echo "JetBrains Mono" ;;
+  esac
+}
+
 # Before facet, core and the tui style were one module called shell. Its links go, the
 # folder becomes core (the repo was renamed on GitHub), the tui style is fetched next to it;
 # what was linked before is linked again by the caller (facet update, facet install).
@@ -1383,6 +1422,14 @@ set_default_app() {
 select_dolphin() {
   ini_set "$HOME/.config/dolphinrc" UiSettings ColorScheme "facet-$(current_style)"
   ini_set "$HOME/.config/qt6ct/qt6ct.conf" Appearance color_scheme_path "$HOME/.config/qt6ct/colors/facet-$(current_style).conf"
+  # QFont string as qt6ct writes it; the code font stays JetBrains Mono (post_dolphin)
+  ini_set "$HOME/.config/qt6ct/qt6ct.conf" Fonts general "\"$(style_ui_font),11,-1,5,400,0,0,0,0,0,0,0,0,0,0,1\""
+}
+
+# GTK apps' UI font follows the style
+select_gtk() {
+  command -v gsettings >/dev/null || return 0
+  run_quiet gsettings set org.gnome.desktop.interface font-name "$(style_ui_font) 10" || true
 }
 
 # Every app that picks its theme itself uses the one of the style in use; Zed, Ghostty,
@@ -1395,6 +1442,7 @@ select_style_apps() {
       vencord) select_vencord ;;
       steam) select_steam ;;
       dolphin) select_dolphin ;;
+      gtk) select_gtk ;;
     esac
   done
   return 0
@@ -1418,12 +1466,12 @@ post_zed() {
 post_gtk() {
   if command -v gsettings >/dev/null || ((DRY_RUN)); then
     run_quiet gsettings set org.gnome.desktop.interface color-scheme prefer-dark || true
-    run_quiet gsettings set org.gnome.desktop.interface font-name "JetBrains Mono 10" || true
+    run_quiet gsettings set org.gnome.desktop.interface font-name "$(style_ui_font) 10" || true
     run_quiet gsettings set org.gnome.desktop.interface monospace-font-name "JetBrains Mono 10" || true
     if [[ -d /usr/share/themes/adw-gtk3-dark ]] || ((DRY_RUN)); then
       run_quiet gsettings set org.gnome.desktop.interface gtk-theme adw-gtk3-dark || true
     fi
-    ok "GTK apps: dark, JetBrains Mono, the theme's colors"
+    ok "GTK apps: dark, $(style_ui_font), the theme's colors"
   else
     info "gsettings not found; GTK 4 apps may stay light until color-scheme is prefer-dark"
   fi
@@ -1439,9 +1487,8 @@ post_dolphin() {
   ini_set "$qt" Appearance custom_palette true
   ini_set "$qt" Appearance color_scheme_path "$HOME/.config/qt6ct/colors/facet-$(current_style).conf"
   ini_set "$qt" Appearance icon_theme breeze-dark
-  ini_set "$qt" Fonts general "$font"
   ini_set "$qt" Fonts fixed "$font"
-  ok "qt6ct: Fusion style, the facet $(current_style) palette, JetBrains Mono, Breeze Dark icons"
+  ok "qt6ct: Fusion style, the facet $(current_style) palette, $(style_ui_font), Breeze Dark icons"
 
   # The id is the file name without .colors
   select_dolphin
@@ -1713,9 +1760,24 @@ grub_font_src() {
 }
 
 grub_apply() {
-  step "Fonts"
-  local tmp regular bold
+  local tmp regular bold images
   tmp="$(mktemp -d)"
+  [[ -f $(screens_dir)/grub/frameshell/theme.txt ]] || theme_render "$(current_theme)" 0 quiet
+  images="$(screens_dir)/grub/frameshell/images.sh"
+  # bloom draws its card, pill and ring pictures and builds its fonts itself
+  if [[ -f $images ]]; then
+    step "Fonts"
+    run bash "$images" "$tmp"
+    ok "Fonts and pictures made"
+    step "Theme files"
+    run sudo install -d "$GRUB_THEME_DIR"
+    run sudo cp "$(screens_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
+    rm -rf "$tmp"
+    ok "Copied to $GRUB_THEME_DIR"
+    grub_config
+    return
+  fi
+  step "Fonts"
   regular=$(grub_font_src Regular)
   bold=$(grub_font_src Bold)
   if [[ -z $regular || -z $bold ]] && ((!DRY_RUN)); then
@@ -1745,7 +1807,11 @@ grub_apply() {
   run sudo cp "$(screens_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
   rm -rf "$tmp"
   ok "Copied to $GRUB_THEME_DIR"
+  grub_config
+}
 
+# GRUB_THEME in /etc/default/grub (the original kept once) and grub.cfg made again
+grub_config() {
   step "GRUB config"
   if [[ ! -f $STATE_DIR/grub-default.orig ]]; then
     run mkdir -p "$STATE_DIR"
@@ -1930,12 +1996,18 @@ cmd_login() {
       info "greetd ($GREETD_CONFIG) will show the frameshell login screen for $user and start: $command"
       confirm "Set up the lockscreen look as the login screen?" || exit 0
       step "Greeter files"
-      run sudo install -d -m 755 "$GREETER_DIR" "$GREETER_DIR/ui"
-      run sudo install -m 644 "$(screens_dir)/greeter/shell.qml" "$GREETER_DIR/shell.qml"
-      run sudo install -m 644 "$(screens_dir)/greeter/ui/Frame.qml" "$GREETER_DIR/ui/Frame.qml"
-      # The active theme, as the shell has it rendered right now
-      run sudo install -m 644 "$(screens_theme_file)" "$GREETER_DIR/ui/Theme.qml"
-      run sudo install -m 755 "$(screens_dir)/greeter/frame-greeter-session" "$GREETER_DIR/frame-greeter-session"
+      if greeter_has_manifest; then
+        greeter_install_manifest
+      else
+        # What bloom's greeter left there
+        run sudo rm -rf "$GREETER_DIR/config" "$GREETER_DIR/components" "$GREETER_DIR/lockscreen"
+        run sudo install -d -m 755 "$GREETER_DIR" "$GREETER_DIR/ui"
+        run sudo install -m 644 "$(screens_dir)/greeter/shell.qml" "$GREETER_DIR/shell.qml"
+        run sudo install -m 644 "$(screens_dir)/greeter/ui/Frame.qml" "$GREETER_DIR/ui/Frame.qml"
+        # The active theme, as the shell has it rendered right now
+        run sudo install -m 644 "$(screens_theme_file)" "$GREETER_DIR/ui/Theme.qml"
+        run sudo install -m 755 "$(screens_dir)/greeter/frame-greeter-session" "$GREETER_DIR/frame-greeter-session"
+      fi
       local tmp
       tmp=$(mktemp)
       printf '{ "user": "%s", "command": ["%s"] }\n' "$user" "$command" >"$tmp"
@@ -2141,10 +2213,15 @@ boot_splash_install() {
   theme=$(current_theme)
   [[ -f $(screens_dir)/plymouth/frameshell/frameshell.script ]] || theme_render "$theme" 0 quiet
   tmp=$(mktemp -d)
-  png_solid "$tmp/line.png" 1 "$(theme_hex "$theme" frame)"
-  png_solid "$tmp/fill.png" 1 "$(theme_hex "$theme" primary)"
-  png_solid "$tmp/track.png" 1 "$(theme_hex "$theme" surface2)"
-  png_solid "$tmp/bg.png" 1 "$(theme_hex "$theme" bg)"
+  # bloom draws its ring and pill pictures itself (images.sh, rendered with the theme)
+  if [[ -f $(screens_dir)/plymouth/frameshell/images.sh ]]; then
+    run bash "$(screens_dir)/plymouth/frameshell/images.sh" "$tmp"
+  else
+    png_solid "$tmp/line.png" 1 "$(theme_hex "$theme" frame)"
+    png_solid "$tmp/fill.png" 1 "$(theme_hex "$theme" primary)"
+    png_solid "$tmp/track.png" 1 "$(theme_hex "$theme" surface2)"
+    png_solid "$tmp/bg.png" 1 "$(theme_hex "$theme" bg)"
+  fi
   run sudo install -d "$PLYMOUTH_DIR"
   for f in frameshell.plymouth frameshell.script; do
     run sudo install -m 644 "$(screens_dir)/plymouth/frameshell/$f" "$PLYMOUTH_DIR/$f"
@@ -2256,7 +2333,8 @@ cmd_grub() {
       info "Copies the frameshell theme ($(current_theme)) to $GRUB_THEME_DIR and sets GRUB_THEME (needs sudo)"
       confirm "Install the GRUB theme?" || exit 0
       step "Dependencies"
-      install_deps ttf-jetbrains-mono
+      # bloom's menu is set in Rubik; gawk draws its pictures (Arch's base has it)
+      if [[ $(screens_style) == bloom ]]; then install_deps ttf-rubik-vf ttf-jetbrains-mono gawk; else install_deps ttf-jetbrains-mono; fi
       grub_apply
       printf '\n%sDone.%s Reboot to see the new boot menu.\n\n' "$c_ok" "$c_reset"
       ;;
@@ -2629,7 +2707,7 @@ theme_reload() {
   fi
   # The login screen keeps its own copy of the theme in /usr/share
   if [[ -d $GREETER_DIR ]] && ((!DRY_RUN)); then
-    if sudo -n install -m 644 "$(screens_theme_file)" "$GREETER_DIR/ui/Theme.qml" 2>/dev/null; then
+    if sudo -n install -D -m 644 "$(screens_theme_file)" "$GREETER_DIR/$(greeter_theme_dest)" 2>/dev/null; then
       ok "Login screen colors updated"
     else
       info "Login screen: run facet login to give it the new colors (needs sudo)"

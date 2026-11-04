@@ -1159,10 +1159,11 @@ post_spicetify() {
     fi
   fi
 
-  # apply fails on a fresh install or after a Spotify update; a new backup fixes both
-  # The quiet first try avoids spicetify's "you haven't backed up" error on a fresh install
+  # apply fails on a fresh install (no backup yet: backup apply) or after a Spotify update (the
+  # backup is outdated and backup apply refuses: restore backup apply, as spicetify says)
+  # The quiet first tries avoid spicetify's "you haven't backed up" error on a fresh install
   if task "Applying the Spotify theme" "Spotify theme applied" \
-    bash -c 'spicetify apply >/dev/null 2>&1 || spicetify backup apply'; then
+    bash -c 'spicetify apply >/dev/null 2>&1 || spicetify backup apply >/dev/null 2>&1 || spicetify restore backup apply'; then
     return 0
   fi
   warn "spicetify failed"

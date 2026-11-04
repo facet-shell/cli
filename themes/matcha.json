@@ -17,6 +17,27 @@
     "warn": "#f2c97d",
     "ok": "#9be37a"
   },
+  "tones": {
+    "surface": "#111410",
+    "container": "#191d17",
+    "high": "#252b22",
+    "highest": "#30362c",
+    "primary": "#a6d396",
+    "onPrimary": "#12380b",
+    "primaryContainer": "#29501f",
+    "onPrimaryContainer": "#c1f0b0",
+    "secondary": "#bccbb1",
+    "secondaryContainer": "#3d4a36",
+    "tertiary": "#a0cfd0",
+    "text": "#e1e4da",
+    "dim": "#c3c8bb",
+    "outline": "#43483f",
+    "page": "#0b0d0a",
+    "ok": "#7dd99a",
+    "okContainer": "#1f4d2c",
+    "error": "#ffb4ab",
+    "errorContainer": "#93000a"
+  },
   "ansi": [
     "#122019",
     "#ff7a85",

@@ -2873,6 +2873,8 @@ cmd_update() {
   local requested=("$@") pkgs=("$@") moved=() p
   # An install from before facet: shell becomes core and look-tui first
   mapfile -t moved < <(migrate_shell_module)
+  # Core without a look shows nothing; a move whose clone failed gets it here (or says why)
+  if has_module core && ! has_module look-tui; then ensure_module look-tui; fi
   ((${#pkgs[@]})) || mapfile -t pkgs < <(installed_packages)
   if ((${#requested[@]} == 0)); then
     for p in "${moved[@]}"; do [[ " ${pkgs[*]} " == *" $p "* ]] || pkgs+=("$p"); done

@@ -3395,7 +3395,7 @@ theme_reload() {
         fi
         ;;
       spicetify) post_spicetify ;;
-      ghostty) info "Ghostty: new windows use the theme, open ones reload with Ctrl+Shift+," ;;
+      ghostty) ghostty_reload ;;
       fish) info "fish and Starship: new shells use the theme" ;;
       vencord) info "Vesktop: reload with Ctrl+R if the colors did not change on their own" ;;
       gtk) info "GTK apps (file dialogs, Nautilus, pavucontrol): restart them for the new colors" ;;
@@ -3427,6 +3427,20 @@ theme_reload() {
     fi
   fi
   return 0
+}
+
+# Open Ghostty windows keep the colors they started with; SIGUSR2 makes Ghostty read its
+# config again (themes included) without closing a window or a shell
+ghostty_reload() {
+  if ! command -v pgrep >/dev/null || ! pgrep -x ghostty >/dev/null; then
+    info "Ghostty: new windows use the theme"
+    return 0
+  fi
+  if run pkill -USR2 -x ghostty; then
+    ok "Ghostty: open windows reloaded"
+  else
+    info "Ghostty: open windows reload with Ctrl+Shift+,"
+  fi
 }
 
 theme_list() {
@@ -3812,6 +3826,10 @@ cmd_style() {
   for p in $(installed_packages); do
     [[ $(link_state "$p") == partial ]] && link_pkg "$p" "$LAST_BACKUP"
   done
+  # Ghostty's theme follows the style (themes/<style>); open windows read it again
+  if [[ $(link_state ghostty) != missing ]]; then
+    ghostty_reload
+  fi
   # A new shell.qml means a new shell; the watchdog restarts it cleanly
   if [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
     run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true

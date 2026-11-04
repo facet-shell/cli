@@ -1552,6 +1552,8 @@ post_zen() {
       # xdg-settings refuses while $BROWSER is set; that is a warning, not a reason to stop the update
       if run xdg-settings set default-web-browser zen.desktop; then
         ok "Zen is the default browser"
+      elif [[ ${BROWSER:-} == *zen* ]]; then
+        ok "Zen is the default browser (\$BROWSER=$BROWSER)"
       elif [[ -n ${BROWSER:-} ]]; then
         warn "\$BROWSER is set ($BROWSER), so xdg-settings leaves the default browser alone; set BROWSER=zen-browser there instead"
       else

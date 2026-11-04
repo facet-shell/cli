@@ -37,6 +37,13 @@ _facet() {
                     words="system game chat music --output"
                 fi
                 ;;
+            keyboard | kb)
+                if ((COMP_CWORD == 2)); then
+                    words="list search set request"
+                elif [[ $prev == set || $prev == use || $prev == pick ]]; then
+                    words=$(facet __complete keyboards 2>/dev/null)
+                fi
+                ;;
             spotify) words="login logout status" ;;
             wallpaper)
                 if ((COMP_CWORD == 2)); then

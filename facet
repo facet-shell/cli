@@ -15,7 +15,9 @@
 #   facet goxlr                  light the GoXLR in the theme's colors (goxlr-utility)
 #   facet audio channels on|off  virtual sound channels (System, Game, Chat, Music) without a GoXLR;
 #                                also: output <sink>, status
-#   facet install keyboard       AULA F75: frame-keyboard, its udev rule (sudo) and the Super+K app
+#   facet add keyboard           frame-keyboard, its udev rules (sudo), the Super+K app; asks which keyboard
+#   facet keyboard [list|search <text>|set [board]|request]
+#                                the supported keyboards, and which one is yours
 #   facet login [install|auto|remove] the lockscreen look as the login screen, or straight into Hyprland (greetd, needs sudo)
 #   facet wallpaper <args…>      passed to frame-wallpaper (backend, set, apply, …)
 #   facet spotify <args…>        passed to frame-spotify (login, logout, status)
@@ -65,7 +67,7 @@ declare -A MODULE_DESC=(
   [spotify]="Spotify themed, search and controls in the launcher"
   [discord]="Vesktop themed, calls and DMs in the shell"
   [steam]="Steam themed through Millennium, its popups in the shell"
-  [keyboard]="keyboard lighting and keys (AULA F75)"
+  [keyboard]="keyboard lighting and keys (AULA F75, F65, F99, Womier L65 and more)"
   [zed]="Zed themed"
   [zen]="Zen themed, with the start page"
   [dolphin]="Dolphin and Qt apps themed"
@@ -233,7 +235,7 @@ declare -A DEPS=(
   # ffmpeg makes the video thumbnails in the wallpaper app; linux-wallpaperengine
   # comes on top when the "both" backend is picked
   [wallpaper]="jq mpvpaper ffmpeg"
-  # frame-keyboard talks to the AULA F75 over hidraw with nothing but Python
+  # frame-keyboard talks to the keyboards over hidraw with nothing but Python
   [keyboard]="python"
   # adw-gtk-theme (GTK 3 apps in the libadwaita look) is used when it is there, not required
   [gtk]="ttf-jetbrains-mono"
@@ -734,7 +736,7 @@ choose() {
 }
 
 # Every command, for the help, the main menu's checks and "did you mean"
-COMMANDS=(install add update remove backup restore theme style grub boot goxlr audio login wallpaper spotify layout status clean help)
+COMMANDS=(install add update remove backup restore theme style grub boot goxlr audio keyboard login wallpaper spotify layout status clean help)
 
 usage() {
   header
@@ -764,6 +766,8 @@ usage() {
     ${s}goxlr${r}                     GoXLR faders, buttons and animation in the theme's colors
     ${s}audio channels${r} on|off     virtual System, Game, Chat, Music outputs without a GoXLR
                               (on [names] [--output <sink>], output <sink>, status)
+    ${s}keyboard${r} [list|set]       the supported keyboards, which one is yours (no name: pick)
+                              (search <text>; request: how to ask for another one)
     ${m}e.g. facet wallpaper backend mpv${r}
 
   ${b}System${r}
@@ -1082,6 +1086,7 @@ cmd_complete() {
     themes) theme_ids ;;
     styles) style_names ;;
     backups) list_backups ;;
+    keyboards) [[ -d $(keyboard_boards_dir) ]] && find "$(keyboard_boards_dir)" -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort ;;
     # Real outputs for facet audio channels output
     sinks) command -v pactl >/dev/null && { pactl list short sinks 2>/dev/null | awk '$2 !~ /^facet-/ && $2 != "frame-rec" { print $2 }'; } ;;
   esac
@@ -1578,40 +1583,304 @@ post_wallpaper() {
   info "Change the backend later with: facet wallpaper backend both|mpv|image"
 }
 
-# ── AULA F75 keyboard ────────────────────────────────────────
+# ── Keyboards ────────────────────────────────────────────────
+# The keyboard module holds frame-keyboard and a registry with one file per supported board
+# (.local/share/frameshell/keyboard/boards/<id>.json). Which board you have is saved in
+# $STATE_DIR/keyboard/board: facet add keyboard asks, facet keyboard set changes it.
 
-KEYBOARD_RULE=70-frameshell-aula-f75.rules
+KEYBOARD_RULE=70-facet-keyboards.rules
+# What the rule was called while only the AULA F75 was known; it goes on the next update
+KEYBOARD_RULE_OLD=70-frameshell-aula-f75.rules
+KEYBOARD_CHOICE="$STATE_DIR/keyboard/board"
+# USB ids for the setup before the keyboard module is downloaded; the registry wins once it is there
+KEYBOARD_IDS_FALLBACK="258a:010c 3554:fa09"
 
-# USB 258a:010c is the F75 on the cable, 3554:fa09 its 2.4 GHz dongle
-keyboard_connected() {
-  local d id
+keyboard_boards_dir() { echo "$(pkg_dir keyboard)/.local/share/frameshell/keyboard/boards"; }
+keyboard_tool() { echo "$(pkg_dir keyboard)/.local/bin/frame-keyboard"; }
+
+# "vid:pid" of every board in the registry, one per line
+keyboard_ids() {
+  local dir
+  dir=$(keyboard_boards_dir)
+  if compgen -G "$dir/*.json" >/dev/null; then
+    grep -oh '"vid": *"[0-9a-fA-F]\{4\}", *"pid": *"[0-9a-fA-F]\{4\}"' "$dir"/*.json \
+      | sed 's/"vid": *"\(....\)", *"pid": *"\(....\)"/\1:\2/' | tr 'A-F' 'a-f'
+  else
+    printf '%s\n' $KEYBOARD_IDS_FALLBACK
+  fi | awk '!seen[$0]++'
+}
+
+# "vid:pid" of everything on the USB bus
+usb_ids() {
+  local d
   for d in /sys/bus/usb/devices/*; do
-    [[ -r $d/idVendor && -r $d/idProduct ]] || continue
-    id="$(<"$d/idVendor"):$(<"$d/idProduct")"
-    [[ $id == 258a:010c || $id == 3554:fa09 ]] && return 0
+    [[ -r $d/idVendor && -r $d/idProduct ]] && echo "$(<"$d/idVendor"):$(<"$d/idProduct")"
   done
+  return 0
+}
+
+# A keyboard from the registry is plugged in
+keyboard_connected() {
+  local ids id
+  ids=" $(keyboard_ids | tr '\n' ' ') "
+  while read -r id; do
+    [[ $ids == *" $id "* ]] && return 0
+  done < <(usb_ids)
   return 1
 }
 
-# The udev rule lets frame-keyboard reach the keyboard without root; it goes to
-# /etc/udev/rules.d only when it is missing or changed, so updates ask for sudo once
-post_keyboard() {
-  local src="$(pkg_dir keyboard)/.local/share/frameshell/udev/$KEYBOARD_RULE" dest="/etc/udev/rules.d/$KEYBOARD_RULE"
-  if cmp -s "$src" "$dest"; then
-    ok "udev rule in place ($dest)"
+keyboard_saved() {
+  local b=""
+  [[ -f $KEYBOARD_CHOICE ]] && read -r b <"$KEYBOARD_CHOICE"
+  echo "$b"
+}
+
+# "id<TAB>vendor<TAB>name<TAB>tested<TAB>usb ids<TAB>aliases" per board, sorted by vendor and name
+keyboard_board_rows() {
+  local dir
+  dir=$(keyboard_boards_dir)
+  compgen -G "$dir/*.json" >/dev/null || return 0
+  jq -r '[.id, .vendor, .name, (if .tested then "tested" else "untested" end),
+          ([.usb[] | "\(.vid):\(.pid)"] | unique | join(" ")), ((.aliases // []) | join(", "))] | @tsv' \
+    "$dir"/*.json | sort -t $'\t' -k2,2f -k3,3f
+}
+
+# Board ids whose USB id is plugged in
+keyboard_detected() {
+  local ids id vendor name tested usb aliases u
+  ids=" $(usb_ids | tr '\n' ' ') "
+  while IFS=$'\t' read -r id vendor name tested usb aliases; do
+    for u in $usb; do
+      if [[ $ids == *" $u "* ]]; then
+        echo "$id"
+        break
+      fi
+    done
+  done < <(keyboard_board_rows)
+  return 0
+}
+
+keyboard_name() {
+  local f
+  f="$(keyboard_boards_dir)/$1.json"
+  if [[ -f $f ]]; then
+    sed -n 's/^ *"name": *"\([^"]*\)".*/\1/p' "$f" | head -n 1
   else
-    info "frame-keyboard needs a udev rule to reach the keyboard without root (sudo)"
-    if run sudo install -m 644 "$src" "$dest"; then
+    echo "$1"
+  fi
+}
+
+# search_menu <question> <start index> <id|description>...: like menu, but typing filters the
+# list (each typed word has to appear in the id or the description, any case); backspace takes
+# a letter back, ↑↓ move, enter picks, esc cancels (exit code 1). An option with the id
+# not-listed always stays at the end. At most 12 rows show at a time; the list scrolls.
+search_menu() {
+  local question=$1 sel=${2:-0}
+  shift 2
+  local opts=("$@") n=$# query="" key rest i j id desc hay word match top=0 max=12 rows drawn=0 want
+  local -a shown=()
+  ((n < max)) && max=$n
+  rows=$((max + 2))
+  want=${opts[sel]%%|*}
+  printf '  %s\n' "$question" >&2
+  printf '  %stype to search · ↑↓ move · enter pick · esc cancel%s\n' "$c_muted" "$c_reset" >&2
+  printf '\e[?25l' >&2
+  trap 'printf "\e[?25h\n" >&2; exit 130' INT
+  while :; do
+    # The options that match every typed word
+    shown=()
+    for ((i = 0; i < n; i++)); do
+      id=${opts[i]%%|*}
+      hay=${opts[i],,}
+      match=1
+      if [[ $id != not-listed ]]; then
+        for word in $query; do [[ $hay == *"${word,,}"* ]] || match=0; done
+      fi
+      ((match)) && shown+=("$i")
+    done
+    # The preselected option keeps its place until something is typed
+    if [[ -n $want ]]; then
+      for ((j = 0; j < ${#shown[@]}; j++)); do [[ ${opts[shown[j]]%%|*} == "$want" ]] && sel=$j; done
+      want=""
+    fi
+    ((sel >= ${#shown[@]})) && sel=$((${#shown[@]} - 1))
+    ((sel < 0)) && sel=0
+    ((sel < top)) && top=$sel
+    ((sel >= top + max)) && top=$((sel - max + 1))
+    ((drawn)) && printf '\e[%dA' "$rows" >&2
+    drawn=1
+    printf '\r\e[K  %s›%s %s%s%s▏ %s%d of %d%s\n' "$c_primary" "$c_reset" "$c_bold" "$query" "$c_reset" \
+      "$c_muted" "${#shown[@]}" "$n" "$c_reset" >&2
+    for ((j = top; j < top + max; j++)); do
+      if ((j >= ${#shown[@]})); then
+        printf '\r\e[K\n' >&2
+        continue
+      fi
+      i=${shown[j]}
+      id=${opts[i]%%|*}
+      desc=${opts[i]#*|}
+      if ((j == sel)); then
+        printf '\r\e[K  %s❯%s %s%-15s%s %s\n' "$c_primary" "$c_reset" "$c_bold" "$id" "$c_reset" "$desc" >&2
+      else
+        printf '\r\e[K    %s%-15s%s %s\n' "$c_muted" "$id" "$c_reset" "$desc" >&2
+      fi
+    done
+    if ((${#shown[@]} > top + max)); then
+      printf '\r\e[K    %s… %d more, type to narrow it down%s\n' "$c_muted" $((${#shown[@]} - top - max)) "$c_reset" >&2
+    else
+      printf '\r\e[K\n' >&2
+    fi
+    IFS= read -rsn1 key || key=$'\e'
+    case $key in
+      "") break ;;
+      $'\x7f' | $'\x08') query=${query%?} ;;
+      $'\e')
+        rest=""
+        IFS= read -rsn2 -t 0.05 rest || true
+        case $rest in
+          "[A") ((sel > 0)) && sel=$((sel - 1)) ;;
+          "[B") ((sel < ${#shown[@]} - 1)) && sel=$((sel + 1)) ;;
+          "")
+            trap - INT
+            printf '\e[?25h' >&2
+            return 1
+            ;;
+        esac
+        ;;
+      [[:print:]])
+        query+=$key
+        sel=0
+        ;;
+    esac
+  done
+  trap - INT
+  printf '\e[?25h' >&2
+  echo "${opts[shown[sel]]%%|*}"
+}
+
+# How to ask for a board that is not in the registry
+keyboard_request_hint() {
+  info "Ask for your keyboard on the facet board: https://github.com/orgs/facet-shell/projects/1"
+  info "(new issue, the \"Keyboard support\" form). Put in the model, what lsusb shows with the"
+  info "keyboard plugged in (cable and dongle) and a link to the vendor's Windows app."
+  info "frame-keyboard sends nothing to a board that is not in the list."
+}
+
+# The picker: every supported board, the plugged-in one preselected; prints the picked id, or
+# nothing for "not listed". -y takes the saved or plugged-in board (nothing when there is none).
+keyboard_pick() {
+  local id vendor name tested usb aliases opts=() start=0 i=0 saved mark detected first=""
+  saved=$(keyboard_saved)
+  detected=" $(keyboard_detected | tr '\n' ' ') "
+  while IFS=$'\t' read -r id vendor name tested usb aliases; do
+    mark=""
+    if [[ $detected == *" $id "* ]]; then
+      mark=" $c_ok· plugged in$c_reset"
+      [[ -z $first ]] && first=$id && start=$i
+    fi
+    opts+=("$id|$name $c_muted· $usb · $tested${aliases:+ · $aliases}$c_reset$mark")
+    i=$((i + 1))
+  done < <(keyboard_board_rows)
+  ((${#opts[@]})) || return 0
+  # A saved board wins over the first plugged-in one (several boards share 258a:010c)
+  if [[ -n $saved ]]; then
+    for ((i = 0; i < ${#opts[@]}; i++)); do [[ ${opts[i]%%|*} == "$saved" ]] && start=$i; done
+  fi
+  if ((ASSUME_YES)); then
+    echo "${saved:-$first}"
+    return 0
+  fi
+  if ! interactive; then
+    # Numbered list for pipes and logs
+    printf '  Which keyboard?\n' >&2
+    for ((i = 0; i < ${#opts[@]}; i++)); do
+      printf '    %s%d%s %-15s %s\n' "$c_primary" $((i + 1)) "$c_reset" "${opts[i]%%|*}" "${opts[i]#*|}" >&2
+    done
+    printf '  Number [enter: %s] ' "${opts[start]%%|*}" >&2
+    local answer=""
+    read -r answer || true
+    [[ -t 0 ]] || printf '%s\n' "$answer" >&2
+    [[ $answer =~ ^[0-9]+$ ]] && ((answer >= 1 && answer <= ${#opts[@]})) && start=$((answer - 1))
+    echo "${opts[start]%%|*}"
+    return 0
+  fi
+  opts+=("not-listed|my keyboard is not here: how to ask for it")
+  local question="Which keyboard do you have?"
+  (($(wc -w <<<"$detected") > 1)) && question+=" (several boards share the USB id that is plugged in)"
+  id=$(search_menu "$question" "$start" "${opts[@]}") || { info "No board picked; facet keyboard set picks one later" >&2; return 0; }
+  if [[ $id == not-listed ]]; then
+    keyboard_request_hint >&2
+    return 0
+  fi
+  echo "$id"
+}
+
+keyboard_save() {
+  local id=$1 bin
+  bin=$(keyboard_tool)
+  if ((DRY_RUN)); then
+    info "would save $id as your keyboard ($KEYBOARD_CHOICE)"
+    return 0
+  fi
+  if [[ -f $bin ]] && command -v python3 >/dev/null; then
+    python3 "$bin" board "$id" >/dev/null || return 1
+  else
+    mkdir -p "$(dirname "$KEYBOARD_CHOICE")"
+    echo "$id" >"$KEYBOARD_CHOICE"
+  fi
+  ok "Keyboard: $(keyboard_name "$id") ($id)"
+}
+
+# The udev rules come from the registry (frame-keyboard udev) and go to /etc/udev/rules.d only
+# when they are missing or changed, so updates ask for sudo once
+keyboard_udev() {
+  local bin tmp dest="/etc/udev/rules.d/$KEYBOARD_RULE"
+  bin=$(keyboard_tool)
+  if ! command -v python3 >/dev/null || [[ ! -f $bin ]]; then
+    if ((DRY_RUN)); then
+      info "would write the udev rules for the keyboards to $dest"
+    else
+      warn "python3 or frame-keyboard missing, no udev rules (facet update keyboard)"
+    fi
+    return 0
+  fi
+  tmp=$(mktemp)
+  # An older keyboard module has no udev command; its rule stays until facet update keyboard
+  if ! python3 "$bin" udev >"$tmp" 2>/dev/null || ! grep -q '^KERNEL==' "$tmp"; then
+    rm -f "$tmp"
+    warn "frame-keyboard could not list the udev rules; run: facet update keyboard"
+    return 0
+  fi
+  if cmp -s "$tmp" "$dest" && [[ ! -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]]; then
+    ok "udev rules in place ($dest)"
+  else
+    info "frame-keyboard needs udev rules to reach the keyboard without root (sudo)"
+    if run sudo install -m 644 "$tmp" "$dest"; then
+      [[ -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]] && run sudo rm -f "/etc/udev/rules.d/$KEYBOARD_RULE_OLD"
       run_quiet sudo udevadm control --reload-rules || true
       run_quiet sudo udevadm trigger --subsystem-match=hidraw || true
-      ok "udev rule installed; unplug and replug the keyboard once"
+      ok "udev rules installed; unplug and replug the keyboard once"
     else
-      warn "Could not install the udev rule; by hand: sudo install -m 644 $src $dest"
+      warn "Could not install the udev rules; by hand: python3 $bin udev | sudo tee $dest"
     fi
   fi
-  keyboard_connected || info "No AULA F75 connected right now; the app finds it once it is plugged in"
+  rm -f "$tmp"
+}
+
+# udev rules, then which board you have (asked once; facet keyboard set changes it)
+post_keyboard() {
+  keyboard_udev
+  local saved picked
+  saved=$(keyboard_saved)
+  if [[ -n $saved && -f $(keyboard_boards_dir)/$saved.json ]]; then
+    ok "Keyboard: $(keyboard_name "$saved") (change it: facet keyboard set)"
+  elif command -v jq >/dev/null; then
+    picked=$(keyboard_pick)
+    [[ -z $picked ]] || keyboard_save "$picked"
+  fi
+  keyboard_connected || info "No supported keyboard plugged in right now; the app finds it once it is"
   info "Super+K opens the keyboard app; it starts as a dry run and sends nothing"
-  info "First test on the board: frame-keyboard list, then frame-keyboard info --live (docs/keyboard.md)"
+  info "First test on the board: frame-keyboard list, then frame-keyboard info --live (docs/boards/ in the keyboard repo)"
 }
 
 # The keyboard app is live once keyboardLive is true in Config.qml (after the first test)
@@ -1622,17 +1891,80 @@ keyboard_live() {
 # New theme, new key colors. They are saved on the keyboard, so this only runs on a theme
 # change, and a board that shows another effect keeps it (--keep-effect)
 keyboard_theme() {
-  local bin="$HOME/.local/bin/frame-keyboard"
+  local bin="$HOME/.local/bin/frame-keyboard" name
   keyboard_connected && [[ -x $bin ]] || return 0
+  name=$(keyboard_name "$(keyboard_saved)")
+  [[ -n $name ]] || name="Keyboard"
   if ! keyboard_live; then
-    info "AULA F75: the keys take the theme colors once keyboardLive is true in Config.qml"
+    info "$name: the keys take the theme colors once keyboardLive is true in Config.qml"
     return 0
   fi
   if run_quiet "$bin" style split --keep-effect --live; then
-    ok "AULA F75 keys in the theme colors (they show with the self-define effect)"
+    ok "$name keys in the theme colors (they show with the self-define effect)"
   else
-    warn "AULA F75: could not set the key colors, try: frame-keyboard style split --live"
+    warn "$name: could not set the key colors, try: frame-keyboard style split --live"
   fi
+}
+
+# facet keyboard [list|search <text>|set [board]|request]
+cmd_keyboard() {
+  local action=${1:-} id
+  (($#)) && shift
+  if [[ $action == request || $action == missing ]]; then
+    keyboard_request_hint
+    return 0
+  fi
+  has_module keyboard || die "The keyboard module is not installed" "add it: facet add keyboard"
+  command -v jq >/dev/null || die "facet keyboard needs jq" "install it: sudo pacman -S jq"
+  case $action in
+    "" | status)
+      id=$(keyboard_saved)
+      if [[ -n $id ]]; then
+        ok "Keyboard: $(keyboard_name "$id") ($id)"
+      else
+        info "No keyboard picked yet (facet keyboard set)"
+      fi
+      for id in $(keyboard_detected); do info "Plugged in, uses the same USB id: $(keyboard_name "$id") ($id)"; done
+      ;;
+    list | ls | search | find)
+      if [[ $action == search || $action == find ]] && (($# == 0)); then
+        die "Search for what?" "facet keyboard search <vendor or model>, e.g. facet keyboard search aula 75"
+      fi
+      local vendor name tested usb aliases hay word found=0 cur
+      cur=$(keyboard_saved)
+      while IFS=$'\t' read -r id vendor name tested usb aliases; do
+        hay="${id,,} ${vendor,,} ${name,,} ${aliases,,}"
+        for word in "$@"; do [[ $hay == *"${word,,}"* ]] || continue 2; done
+        found=1
+        if [[ $id == "$cur" ]]; then
+          printf '  %s❯%s %s%-15s%s %-20s %s%s · %s%s\n' "$c_primary" "$c_reset" "$c_bold" "$id" "$c_reset" "$name" "$c_muted" "$usb" "$tested" "$c_reset"
+        else
+          printf '    %-15s %-20s %s%s · %s%s\n' "$id" "$name" "$c_muted" "$usb" "$tested" "$c_reset"
+        fi
+      done < <(keyboard_board_rows)
+      if ((!found)); then
+        warn "No board matches: $*"
+        keyboard_request_hint
+      elif [[ $action == list || $action == ls ]]; then
+        info "Pick yours: facet keyboard set [board]"
+      fi
+      ;;
+    set | use | pick)
+      id=${1:-}
+      if [[ -z $id ]]; then
+        interactive || die "Which board?" "name it: facet keyboard set <board> (all of them: facet keyboard list)"
+        id=$(keyboard_pick)
+        [[ -n $id ]] || return 0
+      fi
+      if [[ ! -f $(keyboard_boards_dir)/$id.json ]]; then
+        die "Unknown board: $id" "$(did_you_mean "$id" $(keyboard_board_rows | cut -f1))facet keyboard list shows them"
+      fi
+      keyboard_save "$id"
+      ;;
+    *)
+      die "Unknown action: $action" "$(did_you_mean "$action" list search set request)facet keyboard list, search <text>, set [board] or request"
+      ;;
+  esac
 }
 
 # ── Notification daemons ─────────────────────────────────────
@@ -3305,9 +3637,9 @@ setup_wizard() {
     [[ $channels == yes ]] && WANT_CHANNELS=1
   fi
 
-  # A connected AULA F75 gets frame-keyboard and the keyboard app
+  # A connected keyboard that frame-keyboard knows gets it and the keyboard app
   if keyboard_connected; then
-    ok "AULA F75 found, the keyboard package comes along"
+    ok "A supported keyboard is plugged in, the keyboard package comes along"
     SETUP_PKGS+=(keyboard)
   fi
 
@@ -3903,11 +4235,13 @@ cmd_status() {
   fi
   if keyboard_connected; then
     if [[ $(link_state keyboard) != linked ]]; then
-      warn "An AULA F75 is connected but the keyboard package is not installed (facet install keyboard)"
-    elif ! cmp -s "$(pkg_dir keyboard)/.local/share/frameshell/udev/$KEYBOARD_RULE" "/etc/udev/rules.d/$KEYBOARD_RULE"; then
-      warn "The keyboard's udev rule is missing or old (facet update keyboard)"
+      warn "A supported keyboard is plugged in but the keyboard package is not installed (facet add keyboard)"
+    elif [[ ! -f /etc/udev/rules.d/$KEYBOARD_RULE ]] || [[ -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]]       || { command -v python3 >/dev/null && ! cmp -s <(python3 "$(keyboard_tool)" udev 2>/dev/null) "/etc/udev/rules.d/$KEYBOARD_RULE"; }; then
+      warn "The keyboard's udev rules are missing or old (facet update keyboard)"
+    elif [[ -z $(keyboard_saved) ]]; then
+      warn "No keyboard picked (facet keyboard set)"
     else
-      ok "AULA F75 set up (Super+K)"
+      ok "Keyboard: $(keyboard_name "$(keyboard_saved)") set up (Super+K)"
     fi
   fi
   command -v pacman >/dev/null || warn "pacman not found, dependency checks are skipped"
@@ -4037,6 +4371,7 @@ main() {
     theme) cmd_theme "${args[@]}" ;;
     wallpaper | wp) cmd_wallpaper "${args[@]}" ;;
     spotify) cmd_spotify "${args[@]}" ;;
+    keyboard | kb) cmd_keyboard "${args[@]}" ;;
     layout) cmd_layout "${args[@]}" ;;
     style) cmd_style "${args[@]}" ;;
     __complete) cmd_complete "${args[@]}" ;;

@@ -53,3 +53,14 @@ Preview the path migration with `python3 tools/migrate-layout.py --dry-run`; tes
 with `python3 tests/test-migrate-layout.py`. System-wide login and boot files need
 their normal privileged install commands again to adopt the new names; existing
 installed copies remain functional until then.
+
+To migrate already installed login, GRUB and Plymouth files as well, preview with
+`python3 tools/migrate-system-layout.py`. Then apply as root:
+
+```sh
+sudo python3 ~/.local/share/facet/cli/tools/migrate-system-layout.py --apply --rebuild
+```
+
+The script backs up changed system configuration under `/var/lib/facet`, preserves
+compatibility links, and regenerates existing GRUB and mkinitcpio outputs. It leaves
+conflicting destination directories untouched and stops rather than replacing them.

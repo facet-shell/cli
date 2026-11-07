@@ -15,12 +15,12 @@
 #   facet goxlr                  light the GoXLR in the theme's colors (goxlr-utility)
 #   facet audio channels on|off  virtual sound channels (System, Game, Chat, Music) without a GoXLR;
 #                                also: output <sink>, status
-#   facet add keyboard           frame-keyboard, its udev rules (sudo), the Super+K app; asks which keyboard
+#   facet add keyboard           facet-keyboard, its udev rules (sudo), the Super+K app; asks which keyboard
 #   facet keyboard [list|search <text>|set [board]|request]
 #                                the supported keyboards, and which one is yours
 #   facet login [install|auto|remove] the lockscreen look as the login screen, or straight into Hyprland (greetd, needs sudo)
-#   facet wallpaper <args…>      passed to frame-wallpaper (backend, set, apply, …)
-#   facet spotify <args…>        passed to frame-spotify (login, logout, status)
+#   facet wallpaper <args…>      passed to facet-wallpaper (backend, set, apply, …)
+#   facet spotify <args…>        passed to facet-spotify (login, logout, status)
 #   facet style [name|list]      the look of the whole desktop: tui or bloom (theme is the colors)
 #   facet layout [tiling|canvas] Hyprland tiling or the infinite canvas
 #   facet status                 show what is linked and what is missing
@@ -32,11 +32,23 @@
 set -euo pipefail
 
 REPO="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/frameshell"
+
+# Migrate legacy user paths once; compatibility links keep running clients working.
+legacy_layout=false
+for layout_root in "${XDG_DATA_HOME:-$HOME/.local/share}" "${XDG_STATE_HOME:-$HOME/.local/state}" "${XDG_CONFIG_HOME:-$HOME/.config}" "${XDG_CACHE_HOME:-$HOME/.cache}"; do
+  if [[ -d $layout_root/frameshell && ! -L $layout_root/frameshell ]]; then legacy_layout=true; fi
+done
+if $legacy_layout; then
+  command -v python3 >/dev/null || { echo "facet: python3 is required to migrate the old directories" >&2; exit 1; }
+  migration_args=()
+  for option in "$@"; do [[ $option == --dry-run || $option == -n ]] && migration_args=(--dry-run); done
+  python3 "$REPO/tools/migrate-layout.py" "${migration_args[@]}"
+fi
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/facet"
 BACKUP_ROOT="$STATE_DIR/backup"
-GRUB_THEME_DIR="/boot/grub/themes/frameshell"
+GRUB_THEME_DIR="/boot/grub/themes/facet"
 GRUB_DEFAULT_FILE="/etc/default/grub"
-VENCORD_SRC="${XDG_DATA_HOME:-$HOME/.local/share}/frameshell/vencord"
+VENCORD_SRC="${XDG_DATA_HOME:-$HOME/.local/share}/facet/vencord"
 
 # ── Modules ──────────────────────────────────────────────────
 # facet is split into repos (github.com/facet-shell): this CLI with the themes, and one
@@ -45,7 +57,7 @@ VENCORD_SRC="${XDG_DATA_HOME:-$HOME/.local/share}/frameshell/vencord"
 # every style shares (services, bridges, config, Hyprland, wallpapers); a style (style-tui, style-bloom)
 # is the bar, panels and popups on top, linked into the same folders (--no-folding).
 ORG_URL="${FACET_ORG_URL:-https://github.com/facet-shell}"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/frameshell"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/facet"
 MODULES_DIR="$DATA_DIR/modules"
 # Your own pictures (fastfetch logo, wallpapers); never part of a repo
 ASSETS_DIR="$DATA_DIR/assets"
@@ -137,7 +149,7 @@ greeter_install_manifest() {
       package/*) from=$pkg/${from#package/} ;;
     esac
     mode=644
-    [[ $dest == frame-greeter-session ]] && mode=755
+    [[ $dest == facet-greeter-session ]] && mode=755
     run sudo install -D -m "$mode" "$from" "$GREETER_DIR/$dest"
   done <"$src/greeter/files"
 }
@@ -215,11 +227,11 @@ declare -A DEPS=(
   [fish]="fish"
   [starship]="starship"
   [fastfetch]="fastfetch chafa"
-  # curl, jq, openssl: frame-spotify, the Web API helper for the launcher
+  # curl, jq, openssl: facet-spotify, the Web API helper for the launcher
   [spicetify]="spicetify-cli ttf-jetbrains-mono curl jq openssl"
   [vencord]="vesktop ttf-jetbrains-mono jq git nodejs pnpm"
   # millennium (AUR) themes Steam and runs the plugin that sends its notifications to the shell;
-  # python runs frame-steam-css, which recolors the library from Steam's own CSS
+  # python runs facet-steam-css, which recolors the library from Steam's own CSS
   [steam]="steam millennium ttf-jetbrains-mono jq python"
   # qt6-websockets: the Spotify bridge; grim: screenshots; wf-recorder: screen recordings; ffmpeg:
   # cutting screenshots out of the frozen screen and the editors' export (the emoji list, the
@@ -233,7 +245,7 @@ declare -A DEPS=(
   # Idle lock and screen off live in the shell (lockscreen/Lock.qml), no hypridle
   [hypr]=""
   [wallpaper]="jq ffmpeg ncurses vulkan-icd-loader wayland pipewire glslang lz4 freetype2 harfbuzz fontconfig quickjs-ng sdbus-cpp"
-  # frame-keyboard talks to the keyboards over hidraw with nothing but Python
+  # facet-keyboard talks to the keyboards over hidraw with nothing but Python
   [keyboard]="python"
   # adw-gtk-theme (GTK 3 apps in the libadwaita look) is used when it is there, not required
   [gtk]="ttf-jetbrains-mono"
@@ -259,7 +271,7 @@ declare -A EXTRAS=(
   [vencord]=".config/vesktop/settings/settings.json"
   [steam]=".config/millennium/config.json"
   [hypr]=".config/hypr/hyprland.lua .config/hypr/hyprland.conf"
-  [wallpaper]=".local/state/frameshell/wallpaper.json"
+  [wallpaper]=".local/state/facet/wallpaper.json"
   [dolphin]=".config/dolphinrc .config/qt6ct/qt6ct.conf .config/kdeglobals"
 )
 
@@ -269,7 +281,7 @@ NO_PULL=0
 VERBOSE=0
 LAST_BACKUP=""
 # Output of long commands (task) when they run behind a spinner
-LOG_FILE="$STATE_DIR/frame.log"
+LOG_FILE="$STATE_DIR/facet.log"
 
 # ── Output ───────────────────────────────────────────────────
 
@@ -1091,7 +1103,7 @@ cmd_complete() {
     backups) list_backups ;;
     keyboards) [[ -d $(keyboard_boards_dir) ]] && find "$(keyboard_boards_dir)" -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort ;;
     # Real outputs for facet audio channels output
-    sinks) command -v pactl >/dev/null && { pactl list short sinks 2>/dev/null | awk '$2 !~ /^facet-/ && $2 != "frame-rec" { print $2 }'; } ;;
+    sinks) command -v pactl >/dev/null && { pactl list short sinks 2>/dev/null | awk '$2 !~ /^facet-/ && $2 != "facet-rec" { print $2 }'; } ;;
   esac
   return 0
 }
@@ -1115,12 +1127,12 @@ post_fastfetch() {
   fi
 }
 
-# The launcher's Spotify bridge (s mode): the frameshell extension plus a token only the
-# shell and the client know (frameshell-token.js), so no web page can pose as Spotify.
-# Without it the launcher falls back to frame-spotify and MPRIS.
+# The launcher's Spotify bridge (s mode): the facet extension plus a token only the
+# shell and the client know (facet-token.js), so no web page can pose as Spotify.
+# Without it the launcher falls back to facet-spotify and MPRIS.
 spotify_bridge() {
   local token_file="$STATE_DIR/spotify-bridge.token"
-  local token_js="$HOME/.config/spicetify/Extensions/frameshell-token.js"
+  local token_js="$HOME/.config/spicetify/Extensions/facet-token.js"
   if ((DRY_RUN)); then
     info "would write the bridge token to $token_file and $token_js"
   else
@@ -1128,10 +1140,10 @@ spotify_bridge() {
     if [[ ! -s $token_file ]]; then
       (umask 077 && od -An -tx1 -N24 /dev/urandom | tr -d ' \n' >"$token_file")
     fi
-    printf 'window.FRAMESHELL_TOKEN = "%s";\n' "$(cat "$token_file")" >"$token_js"
+    printf 'window.FACET_TOKEN = "%s";\n' "$(cat "$token_file")" >"$token_js"
   fi
-  run spicetify config extensions frameshell-token.js
-  run spicetify config extensions frameshell.js
+  run spicetify config extensions facet-token.js
+  run spicetify config extensions facet.js
 }
 
 # The theme folder and color scheme of the style in use (Themes/<style>, [<style>])
@@ -1187,12 +1199,12 @@ select_vencord() {
     return 0
   fi
   json_edit "$vencord" --arg t "$(current_style).theme.css" \
-    '.enabledThemes = (((.enabledThemes // []) | map(select(test("^(frameshell|tui|bloom)\\.theme\\.css$") | not))) + [$t])'
+    '.enabledThemes = (((.enabledThemes // []) | map(select(test("^(frameshell|facet|tui|bloom)\\.theme\\.css$") | not))) + [$t])'
 }
 
 # ── Vencord build with the ShellBridge plugin ────────────────
 # Vesktop ships its own Vencord, but user plugins need a self-built one. frame keeps a
-# clone in ~/.local/share/frameshell/vencord and rebuilds only when Vencord or the
+# clone in ~/.local/share/facet/vencord and rebuilds only when Vencord or the
 # plugin changed.
 
 vencord_plugin_hash() {
@@ -1283,7 +1295,7 @@ post_vencord() {
     # Vesktop's "Vencord location": the dist folder of the build
     # Vesktop keeps "Vencord location" in state.json (not settings.json)
     json_edit "$vesktop" --arg dir "$VENCORD_SRC/dist" '.vencordDir = $dir'
-    ok "ShellBridge enabled, Vesktop uses the frameshell Vencord build"
+    ok "ShellBridge enabled, Vesktop uses the facet Vencord build"
     info "Start Vesktop to load it"
   fi
   return 0
@@ -1313,19 +1325,19 @@ millennium_hook() {
 }
 
 # Steam's library and settings pages use hashed class names and literal colors, so the
-# theme cannot name them: frame-steam-css (steam package) reads the installed Steam's CSS
+# theme cannot name them: facet-steam-css (steam package) reads the installed Steam's CSS
 # and writes generated.css with those classes in the theme's colors
 steam_css() {
-  local bin="$HOME/.local/bin/frame-steam-css"
+  local bin="$HOME/.local/bin/facet-steam-css"
   [[ -x $bin && -f $HOME/.local/share/Steam/steamui/css/sp.css ]] || return 0
   if run_quiet "$bin"; then
-    ok "Steam: library colors generated from Steam's own CSS (frame-steam-css)"
+    ok "Steam: library colors generated from Steam's own CSS (facet-steam-css)"
   else
-    warn "Steam: frame-steam-css failed, the library keeps Steam's colors"
+    warn "Steam: facet-steam-css failed, the library keeps Steam's colors"
   fi
 }
 
-# Millennium: the style's theme (themes/<style>) and the frameshell plugin, which moves Steam's
+# Millennium: the style's theme (themes/<style>) and the facet plugin, which moves Steam's
 # notifications into the shell. A running Steam gets both over Millennium's steam://
 # links; otherwise they go into Millennium's config.json (only while Steam is closed,
 # it writes its own copy back).
@@ -1361,8 +1373,8 @@ post_steam() {
       run mkdir -p "$steam_dir/millennium/themes"
       run ln -sfn "$theme" "$target"
     done
-    # The theme was called Frameshell before the styles
-    [[ -L $steam_dir/millennium/themes/Frameshell ]] && run rm -f "$steam_dir/millennium/themes/Frameshell"
+    # The theme was called Facet before the styles
+    [[ -L $steam_dir/millennium/themes/Facet ]] && run rm -f "$steam_dir/millennium/themes/Facet"
   fi
 
   if ! has_pkg millennium && ! has_pkg millennium-bin && ((!DRY_RUN)); then
@@ -1374,7 +1386,7 @@ post_steam() {
   if command -v pgrep >/dev/null && pgrep -x steam >/dev/null; then
     # The plugin link reloads Steam's UI
     run_quiet steam "steam://millennium/settings/themes/enable/$(current_style)"
-    run_quiet steam steam://millennium/settings/plugins/enable/frameshell
+    run_quiet steam steam://millennium/settings/plugins/enable/facet
     ok "Theme and plugin turned on in the running Steam"
     return 0
   fi
@@ -1383,16 +1395,16 @@ post_steam() {
     return 0
   fi
   if ((DRY_RUN)); then
-    info "would set the theme to $(current_style) and enable the frameshell plugin in $config"
+    info "would set the theme to $(current_style) and enable the facet plugin in $config"
     return 0
   fi
   if ! command -v jq >/dev/null; then
-    warn "jq not found, turn it on by hand: Steam → Millennium → Themes → facet $(current_style), Plugins → frameshell"
+    warn "jq not found, turn it on by hand: Steam → Millennium → Themes → facet $(current_style), Plugins → facet"
     return 0
   fi
 
   json_edit "$config" --arg t "$(current_style)" '.themes.activeTheme = $t
-    | .plugins.enabledPlugins = ((.plugins.enabledPlugins // []) + ["frameshell"] | unique)'
+    | .plugins.enabledPlugins = ((.plugins.enabledPlugins // []) + ["facet"] | unique)'
   ok "Theme and plugin enabled, start Steam to load them"
   return 0
 }
@@ -1471,7 +1483,7 @@ post_zed() {
   if confirm "Open text files with Zed?"; then
     set_default_app dev.zed.Zed.desktop text/plain text/markdown application/json application/x-shellscript       && ok "Zed is the default for text files"
   fi
-  info "Open a project with: zeditor ~/frameshell   (Super+Shift+E opens Zed)"
+  info "Open a project with: zeditor ~/facet   (Super+Shift+E opens Zed)"
 }
 
 # Outside Plasma, Dolphin takes its colors from its own color scheme setting and the
@@ -1536,7 +1548,7 @@ post_zen() {
   fi
   info "Profile: ${profile/#"$HOME"/\~}"
   # The start page lives at a fixed place, so the home page pref does not depend on the profile
-  local page="${XDG_DATA_HOME:-$HOME/.local/share}/frameshell/startpage.html"
+  local page="${XDG_DATA_HOME:-$HOME/.local/share}/facet/startpage.html"
   if [[ "$(readlink -f "$page" 2>/dev/null)" != "$(pkg_dir zen)/startpage.html" ]]; then
     run mkdir -p "$(dirname "$page")"
     run ln -sf "$(pkg_dir zen)/startpage.html" "$page"
@@ -1567,7 +1579,7 @@ post_zen() {
 post_wallpaper() {
   local src="$DATA_DIR/glint" bin="$HOME/.local/bin/glint"
   local config="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/services"
-  if ((!DRY_RUN)) && [[ ! -f $config/GlintClient.qml || ! -f $config/WallpaperState.js || ! -x $HOME/.local/bin/frame-glint-start ]]; then
+  if ((!DRY_RUN)) && [[ ! -f $config/GlintClient.qml || ! -f $config/WallpaperState.js || ! -x $HOME/.local/bin/facet-glint-start ]]; then
     die "The installed Quickshell module needs the glint integration" "update the core module, then run: facet install quickshell hypr wallpaper"
   fi
   if [[ -x $bin && ! -d $src/.git && $("$bin" --help) == *"glint download "* ]]; then
@@ -1605,8 +1617,8 @@ post_wallpaper() {
 }
 
 # ── Keyboards ────────────────────────────────────────────────
-# The keyboard module holds frame-keyboard and a registry with one file per supported board
-# (.local/share/frameshell/keyboard/boards/<id>.json). Which board you have is saved in
+# The keyboard module holds facet-keyboard and a registry with one file per supported board
+# (.local/share/facet/keyboard/boards/<id>.json). Which board you have is saved in
 # $STATE_DIR/keyboard/board: facet add keyboard asks, facet keyboard set changes it.
 
 KEYBOARD_RULE=70-facet-keyboards.rules
@@ -1616,8 +1628,8 @@ KEYBOARD_CHOICE="$STATE_DIR/keyboard/board"
 # USB ids for the setup before the keyboard module is downloaded; the registry wins once it is there
 KEYBOARD_IDS_FALLBACK="258a:010c 3554:fa09 0c45:800a"
 
-keyboard_boards_dir() { echo "$(pkg_dir keyboard)/.local/share/frameshell/keyboard/boards"; }
-keyboard_tool() { echo "$(pkg_dir keyboard)/.local/bin/frame-keyboard"; }
+keyboard_boards_dir() { echo "$(pkg_dir keyboard)/.local/share/facet/keyboard/boards"; }
+keyboard_tool() { echo "$(pkg_dir keyboard)/.local/bin/facet-keyboard"; }
 
 # "vid:pid" of every board in the registry, one per line
 keyboard_ids() {
@@ -1655,7 +1667,7 @@ keyboard_saved() {
   if [[ -f $KEYBOARD_CHOICE ]]; then
     read -r b <"$KEYBOARD_CHOICE"
   elif [[ -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]]; then
-    # Before the board registry frame-keyboard knew only the AULA F75, and its udev rule is still
+    # Before the board registry facet-keyboard knew only the AULA F75, and its udev rule is still
     # there; the plugged-in guess cannot tell it apart (every g5kb board is 258a:010c)
     b=aula-f75
   fi
@@ -1790,7 +1802,7 @@ keyboard_request_hint() {
   info "Ask for your keyboard on the facet board: https://github.com/orgs/facet-shell/projects/1"
   info "(new issue, the Idea form, \"Keyboard support: <model>\"). Put in the model, what lsusb shows with the"
   info "keyboard plugged in (cable and dongle) and a link to the vendor's Windows app."
-  info "frame-keyboard sends nothing to a board that is not in the list."
+  info "facet-keyboard sends nothing to a board that is not in the list."
 }
 
 # The picker: every supported board, the plugged-in one preselected; prints the picked id, or
@@ -1858,7 +1870,7 @@ keyboard_save() {
   ok "Keyboard: $(keyboard_name "$id") ($id)"
 }
 
-# The udev rules come from the registry (frame-keyboard udev) and go to /etc/udev/rules.d only
+# The udev rules come from the registry (facet-keyboard udev) and go to /etc/udev/rules.d only
 # when they are missing or changed, so updates ask for sudo once
 keyboard_udev() {
   local bin tmp dest="/etc/udev/rules.d/$KEYBOARD_RULE"
@@ -1867,7 +1879,7 @@ keyboard_udev() {
     if ((DRY_RUN)); then
       info "would write the udev rules for the keyboards to $dest"
     else
-      warn "python3 or frame-keyboard missing, no udev rules (facet update keyboard)"
+      warn "python3 or facet-keyboard missing, no udev rules (facet update keyboard)"
     fi
     return 0
   fi
@@ -1875,13 +1887,13 @@ keyboard_udev() {
   # An older keyboard module has no udev command; its rule stays until facet update keyboard
   if ! python3 "$bin" udev >"$tmp" 2>/dev/null || ! grep -q '^KERNEL==' "$tmp"; then
     rm -f "$tmp"
-    warn "frame-keyboard could not list the udev rules; run: facet update keyboard"
+    warn "facet-keyboard could not list the udev rules; run: facet update keyboard"
     return 0
   fi
   if cmp -s "$tmp" "$dest" && [[ ! -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]]; then
     ok "udev rules in place ($dest)"
   else
-    info "frame-keyboard needs udev rules to reach the keyboard without root (sudo)"
+    info "facet-keyboard needs udev rules to reach the keyboard without root (sudo)"
     if run sudo install -m 644 "$tmp" "$dest"; then
       [[ -f /etc/udev/rules.d/$KEYBOARD_RULE_OLD ]] && run sudo rm -f "/etc/udev/rules.d/$KEYBOARD_RULE_OLD"
       run_quiet sudo udevadm control --reload-rules || true
@@ -1912,7 +1924,7 @@ post_keyboard() {
   fi
   keyboard_connected || info "No supported keyboard plugged in right now; the app finds it once it is"
   info "Super+K opens the keyboard app; it starts as a dry run and sends nothing"
-  info "First test on the board: frame-keyboard list, then frame-keyboard info --live (docs/boards/ in the keyboard repo)"
+  info "First test on the board: facet-keyboard list, then facet-keyboard info --live (docs/boards/ in the keyboard repo)"
 }
 
 # The keyboard app is live once keyboardLive is true in Config.qml (after the first test)
@@ -1923,7 +1935,7 @@ keyboard_live() {
 # New theme, new key colors. They are saved on the keyboard, so this only runs on a theme
 # change, and a board that shows another effect keeps it (--keep-effect)
 keyboard_theme() {
-  local bin="$HOME/.local/bin/frame-keyboard" name
+  local bin="$HOME/.local/bin/facet-keyboard" name
   keyboard_connected && [[ -x $bin ]] || return 0
   name=$(keyboard_name "$(keyboard_saved)")
   [[ -n $name ]] || name="Keyboard"
@@ -1934,7 +1946,7 @@ keyboard_theme() {
   if run_quiet "$bin" style split --keep-effect --live; then
     ok "$name keys in the theme colors (they show with the self-define effect)"
   else
-    warn "$name: could not set the key colors, try: frame-keyboard style split --live"
+    warn "$name: could not set the key colors, try: facet-keyboard style split --live"
   fi
 }
 
@@ -2002,7 +2014,7 @@ cmd_keyboard() {
 # ── Notification daemons ─────────────────────────────────────
 # Only one program can own the notification service on D-Bus. mako, dunst or
 # swaync would take the notifications away from the shell; so would noctalia, the shell
-# CachyOS ships with Hyprland (its bar, launcher and keys go too, frameshell has its own).
+# CachyOS ships with Hyprland (its bar, launcher and keys go too, facet has its own).
 
 notification_conflicts() {
   local d
@@ -2034,9 +2046,9 @@ disable_notification_daemons() {
     fi
     for f in "${files[@]}"; do
       if [[ $f == *.lua ]]; then
-        run sed -i -E "s|^([[:space:]]*hl\\.exec_cmd\\(.*\\b$d\\b.*)|-- frame: \\1|" "$HOME/$f"
+        run sed -i -E "s|^([[:space:]]*hl\\.exec_cmd\\(.*\\b$d\\b.*)|-- facet: \\1|" "$HOME/$f"
       else
-        run sed -i -E "s|^([[:space:]]*exec(-once)?[[:space:]]*=.*\\b$d\\b.*)|# frame: \\1|" "$HOME/$f"
+        run sed -i -E "s|^([[:space:]]*exec(-once)?[[:space:]]*=.*\\b$d\\b.*)|# facet: \\1|" "$HOME/$f"
       fi
     done
   done
@@ -2062,14 +2074,14 @@ post_quickshell() {
   return 0
 }
 
-# Hooks frame/shell.lua into the user's own hyprland.lua instead of owning it.
+# Hooks facet/shell.lua into the user's own hyprland.lua instead of owning it.
 # Hyprland 0.55+ reads hyprland.lua first; hyprland.conf (hyprlang) is being dropped.
 post_hypr() {
   local lua="$HOME/.config/hypr/hyprland.lua" conf="$HOME/.config/hypr/hyprland.conf"
-  local line='require("frame/shell")'
+  local line='require("facet/shell")'
   if [[ ! -f $lua ]]; then
     if [[ -f $conf ]]; then
-      warn "Your Hyprland config is hyprland.conf, the old format; frameshell's Hyprland files are Lua"
+      warn "Your Hyprland config is hyprland.conf, the old format; facet's Hyprland files are Lua"
       info "Hyprland 0.55+ reads hyprland.lua instead and drops hyprland.conf soon. Move your settings to"
       info "hyprland.lua (Hyprland's example: https://github.com/hyprwm/Hyprland/blob/main/example/hyprland.lua),"
       info "then run: facet install hypr"
@@ -2080,17 +2092,17 @@ post_hypr() {
     return 0
   fi
   if grep -qF "$line" "$lua"; then
-    ok "hyprland.lua already loads frame/shell"
+    ok "hyprland.lua already loads facet/shell"
   else
     snapshot_files hyprland-lua ".config/hypr/hyprland.lua"
     if ((DRY_RUN)); then
       info "would append to $lua: $line"
     else
-      printf '\n-- frameshell: Quickshell, keybinds, idle, hotkey overlay and window colors\n%s\n' "$line" >>"$lua"
+      printf '\n-- facet: Quickshell, keybinds, idle, hotkey overlay and window colors\n%s\n' "$line" >>"$lua"
       ok "Added to hyprland.lua: $line"
     fi
   fi
-  # Binds frame adds (frame/shell.lua, frame/apps.lua) that the user's config may already
+  # Binds frame adds (facet/shell.lua, facet/apps.lua) that the user's config may already
   # have, as hl.bind("SUPER + L", …) or hl.bind(mainMod .. " + L", …); a doubled bind runs both
   local key dupes=()
   for key in L SPACE C W E B; do
@@ -2132,8 +2144,8 @@ grub_font_src() {
 grub_apply() {
   local tmp regular bold images
   tmp="$(mktemp -d)"
-  [[ -f $(screens_dir)/grub/frameshell/theme.txt ]] || theme_render "$(current_theme)" 0 quiet
-  images="$(screens_dir)/grub/frameshell/images.sh"
+  [[ -f $(screens_dir)/grub/facet/theme.txt ]] || theme_render "$(current_theme)" 0 quiet
+  images="$(screens_dir)/grub/facet/images.sh"
   # bloom draws its card, pill and ring pictures and builds its fonts itself
   if [[ -f $images ]]; then
     step "Fonts"
@@ -2141,7 +2153,7 @@ grub_apply() {
     ok "Fonts and pictures made"
     step "Theme files"
     run sudo install -d "$GRUB_THEME_DIR"
-    run sudo cp "$(screens_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
+    run sudo cp "$(screens_dir)/grub/facet/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
     rm -rf "$tmp"
     ok "Copied to $GRUB_THEME_DIR"
     grub_config
@@ -2154,9 +2166,9 @@ grub_apply() {
     die "JetBrains Mono not found" "install it: sudo pacman -S ttf-jetbrains-mono"
   fi
   # Names must match theme.txt: "Frame Mono Regular 16" etc.
-  run grub-mkfont -n "Frame Mono" -s 14 -o "$tmp/frame-regular-14.pf2" "$regular"
-  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/frame-regular-16.pf2" "$regular"
-  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/frame-bold-16.pf2" "$bold"
+  run grub-mkfont -n "Frame Mono" -s 14 -o "$tmp/facet-regular-14.pf2" "$regular"
+  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/facet-regular-16.pf2" "$regular"
+  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/facet-bold-16.pf2" "$bold"
   ok "Fonts built"
 
   step "Theme files"
@@ -2165,7 +2177,7 @@ grub_apply() {
   theme=$(current_theme)
   line_color=$(theme_hex "$theme" surface2)
   select_color=$(theme_hex "$theme" primary)
-  [[ -f $(screens_dir)/grub/frameshell/theme.txt ]] || theme_render "$theme" 0 quiet
+  [[ -f $(screens_dir)/grub/facet/theme.txt ]] || theme_render "$theme" 0 quiet
   for f in border select_c select_e select_n select_ne select_s select_se; do
     png_solid "$tmp/$f.png" 1 "$line_color"
   done
@@ -2174,7 +2186,7 @@ grub_apply() {
     png_solid "$tmp/$f.png" 3 "$select_color"
   done
   run sudo install -d "$GRUB_THEME_DIR"
-  run sudo cp "$(screens_dir)/grub/frameshell/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
+  run sudo cp "$(screens_dir)/grub/facet/theme.txt" "$tmp"/*.png "$tmp"/*.pf2 "$GRUB_THEME_DIR/"
   rm -rf "$tmp"
   ok "Copied to $GRUB_THEME_DIR"
   grub_config
@@ -2326,7 +2338,7 @@ channels_has_sink() { channels_sinks | grep -qxF -- "$1"; }
 channels_existing() {
   pactl -f json list sinks 2>/dev/null | jq -r --arg k "$1" '
     def norm: ascii_downcase | gsub("[\\s_-]"; "");
-    first(.[] | select((.name | startswith("facet-")) | not) | select(.name != "frame-rec")
+    first(.[] | select((.name | startswith("facet-")) | not) | select(.name != "facet-rec")
       | select(((.description // "") + " " + .name) | test("goxlr"; "i") | not)
       | select((.name | norm) == $k or ((.description // "") | norm) == $k) | .name) // empty' 2>/dev/null
 }
@@ -2351,7 +2363,7 @@ channels_pick_output() {
     echo "$sink"
     return 0
   fi
-  channels_sinks | grep -v -e '^facet-' -e '^frame-rec$' | head -n 1
+  channels_sinks | grep -v -e '^facet-' -e '^facet-rec$' | head -n 1
 }
 
 channels_state_output() { [[ -f $CHANNELS_STATE ]] && jq -r '.output // empty' "$CHANNELS_STATE" 2>/dev/null; return 0; }
@@ -2409,8 +2421,8 @@ channels_wait_sinks() {
 
 # The shell only notices the new PipeWire after a restart of its own
 channels_restart_shell() {
-  if pgrep -x qs >/dev/null 2>&1 && [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
-    run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true
+  if pgrep -x qs >/dev/null 2>&1 && [[ -x $HOME/.local/bin/facet-shell-watchdog ]]; then
+    run_quiet "$HOME/.local/bin/facet-shell-watchdog" restart || true
     info "The shell restarted to pick up the new outputs"
   fi
 }
@@ -2529,7 +2541,7 @@ channels_off() {
   local output sinks=()
   output=$(channels_state_output)
   if [[ -z $output ]] || ! channels_has_sink "$output"; then
-    output=$(channels_sinks | grep -v -e '^facet-' -e '^frame-rec$' | head -n 1)
+    output=$(channels_sinks | grep -v -e '^facet-' -e '^facet-rec$' | head -n 1)
   fi
   [[ -f $CHANNELS_STATE ]] && mapfile -t sinks < <(jq -r '.channels[].sink' "$CHANNELS_STATE" 2>/dev/null)
   # Apps first, so WirePlumber remembers the real output for them, not a channel that is gone
@@ -2618,15 +2630,15 @@ setup_channels() {
 
 # ── Login screen ────────────────────────────────────────────
 # One user, one screen: the lockscreen's look as the greeter. greetd runs
-# frame-greeter-session (greeter/), which starts a small compositor (the one CachyOS
+# facet-greeter-session (greeter/), which starts a small compositor (the one CachyOS
 # ships with noctalia-greeter, or cage) with Quickshell drawing greeter/shell.qml. The
-# greeter user cannot read your home, so the files go to /usr/share/frameshell/greeter;
+# greeter user cannot read your home, so the files go to /usr/share/facet/greeter;
 # everything under /etc/greetd and /usr/share needs sudo.
 GREETD_CONFIG="/etc/greetd/config.toml"
-GREETER_DIR="/usr/share/frameshell/greeter"
+GREETER_DIR="/usr/share/facet/greeter"
 # Second copy of the original next to it, so `facet login remove` works even when the
 # state folder is gone
-GREETD_BACKUP_SUFFIX=".frameshell-orig"
+GREETD_BACKUP_SUFFIX=".facet-orig"
 
 # The file greetd really reads: its unit may pass --config/-c (a distro drop-in)
 greetd_config_path() {
@@ -2696,7 +2708,7 @@ cmd_login() {
       local owner
       owner=$(pacman -Qqo "$GREETD_CONFIG" 2>/dev/null || true)
       [[ -n $owner ]] && info "$GREETD_CONFIG belongs to the package $owner; should an update replace it, run facet login again"
-      info "greetd ($GREETD_CONFIG) will show the frameshell login screen for $user and start: $command"
+      info "greetd ($GREETD_CONFIG) will show the facet login screen for $user and start: $command"
       confirm "Set up the lockscreen look as the login screen?" || exit 0
       step "Greeter files"
       if greeter_has_manifest; then
@@ -2709,7 +2721,7 @@ cmd_login() {
         run sudo install -m 644 "$(screens_dir)/greeter/ui/Frame.qml" "$GREETER_DIR/ui/Frame.qml"
         # The active theme, as the shell has it rendered right now
         run sudo install -m 644 "$(screens_theme_file)" "$GREETER_DIR/ui/Theme.qml"
-        run sudo install -m 755 "$(screens_dir)/greeter/frame-greeter-session" "$GREETER_DIR/frame-greeter-session"
+        run sudo install -m 755 "$(screens_dir)/greeter/facet-greeter-session" "$GREETER_DIR/facet-greeter-session"
       fi
       local tmp
       tmp=$(mktemp)
@@ -2719,7 +2731,7 @@ cmd_login() {
       ok "Greeter in $GREETER_DIR (theme $(current_theme))"
       step "greetd"
       # Only the distro's own config counts as the original, never one frame wrote
-      if ! grep -q "frameshell" "$GREETD_CONFIG"; then
+      if ! grep -q "facet" "$GREETD_CONFIG"; then
         run mkdir -p "$STATE_DIR"
         run cp "$GREETD_CONFIG" "$STATE_DIR/greetd-config.orig"
         run sudo install -m 644 "$GREETD_CONFIG" "$GREETD_CONFIG$GREETD_BACKUP_SUFFIX"
@@ -2730,20 +2742,20 @@ cmd_login() {
       awk 'BEGIN{skip=0} /^\[default_session\]/{skip=1; next} /^\[/{skip=0} !skip' "$GREETD_CONFIG" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' >"$tmp"
       {
         echo
-        echo "# frameshell: the lockscreen look as the login screen (facet login)"
+        echo "# facet: the lockscreen look as the login screen (facet login)"
         echo "[default_session]"
-        echo "command = \"$GREETER_DIR/frame-greeter-session\""
+        echo "command = \"$GREETER_DIR/facet-greeter-session\""
         echo "user = \"greeter\""
       } >>"$tmp"
       run sudo install -m 644 "$tmp" "$GREETD_CONFIG"
       rm -f "$tmp"
-      if ((!DRY_RUN)) && [[ $(greetd_default_command "$GREETD_CONFIG") != "$GREETER_DIR/frame-greeter-session" ]]; then
-        die "$GREETD_CONFIG does not name the frameshell greeter after writing it" "look at the file before rebooting"
+      if ((!DRY_RUN)) && [[ $(greetd_default_command "$GREETD_CONFIG") != "$GREETER_DIR/facet-greeter-session" ]]; then
+        die "$GREETD_CONFIG does not name the facet greeter after writing it" "look at the file before rebooting"
       fi
-      ok "Wrote $GREETD_CONFIG (default_session → frameshell greeter)"
+      ok "Wrote $GREETD_CONFIG (default_session → facet greeter)"
       info "Try it without rebooting from a text console (Ctrl+Alt+F3): sudo systemctl restart greetd"
-      info "If it stays black: journalctl -b -t frame-greeter -u greetd, and facet login remove brings the old one back"
-      printf '\n%sDone.%s The next boot shows the frameshell login screen. facet theme set … updates its colors too.\n\n' "$c_ok" "$c_reset"
+      info "If it stays black: journalctl -b -t facet-greeter -u greetd, and facet login remove brings the old one back"
+      printf '\n%sDone.%s The next boot shows the facet login screen. facet theme set … updates its colors too.\n\n' "$c_ok" "$c_reset"
       ;;
     auto)
       # greetd's [initial_session] logs one user in at boot without a greeter; after a
@@ -2754,10 +2766,10 @@ cmd_login() {
       greetd_is_display_manager \
         || warn "systemd does not start greetd as the display manager; enable it: sudo systemctl enable greetd (after disabling the other one)"
       info "greetd ($GREETD_CONFIG) will start $command for $user at boot, without a greeter"
-      info "The session starts locked: the shell's own lockscreen asks for the password (hypr/frame/shell.lua)"
+      info "The session starts locked: the shell's own lockscreen asks for the password (hypr/facet/shell.lua)"
       confirm "Boot straight into the locked desktop?" || exit 0
       step "greetd"
-      if ! grep -q "frameshell" "$GREETD_CONFIG"; then
+      if ! grep -q "facet" "$GREETD_CONFIG"; then
         run mkdir -p "$STATE_DIR"
         run cp "$GREETD_CONFIG" "$STATE_DIR/greetd-config.orig"
         run sudo install -m 644 "$GREETD_CONFIG" "$GREETD_CONFIG$GREETD_BACKUP_SUFFIX"
@@ -2769,7 +2781,7 @@ cmd_login() {
       awk 'BEGIN{skip=0} /^\[initial_session\]/{skip=1; next} /^\[/{skip=0} !skip' "$GREETD_CONFIG" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' >"$tmp"
       {
         echo
-        echo "# frameshell: straight into Hyprland at boot, no login screen (facet login auto)"
+        echo "# facet: straight into Hyprland at boot, no login screen (facet login auto)"
         echo "[initial_session]"
         echo "command = \"$command\""
         echo "user = \"$user\""
@@ -2799,9 +2811,9 @@ cmd_login() {
 # The rest of the boot chain in the theme: Plymouth (between GRUB and the login screen,
 # also asks for the disk password) and the text consoles' 16 colors, which show when
 # something goes wrong before the desktop. Both need sudo.
-PLYMOUTH_DIR="/usr/share/plymouth/themes/frameshell"
-VTRGB_FILE="/etc/frameshell/vtrgb"
-VTRGB_UNIT="/etc/systemd/system/frameshell-vtrgb.service"
+PLYMOUTH_DIR="/usr/share/plymouth/themes/facet"
+VTRGB_FILE="/etc/facet/vtrgb"
+VTRGB_UNIT="/etc/systemd/system/facet-vtrgb.service"
 
 # The theme's ansi colors as setvtrgb wants them: one line each for red, green and blue,
 # 16 decimal values; color 0 is the console background, so it gets the theme's bg
@@ -2834,9 +2846,9 @@ rebuild_initramfs() {
 # The installed splash differs from what the templates render now (new version or theme)
 boot_splash_outdated() {
   local f src
-  src=$(screens_dir)/plymouth/frameshell
+  src=$(screens_dir)/plymouth/facet
   [[ -d $PLYMOUTH_DIR ]] || return 1
-  for f in frameshell.plymouth frameshell.script; do
+  for f in facet.plymouth facet.script; do
     cmp -s "$src/$f" "$PLYMOUTH_DIR/$f" || return 0
   done
   return 1
@@ -2857,10 +2869,10 @@ initramfs_listing() {
 # Everything that keeps the splash from showing, one line each
 boot_check() {
   local hooks listing all_ok=1
-  if [[ $(plymouth-set-default-theme 2>/dev/null) == frameshell ]]; then
-    ok "Plymouth uses frameshell"
+  if [[ $(plymouth-set-default-theme 2>/dev/null) == facet ]]; then
+    ok "Plymouth uses facet"
   else
-    warn "Plymouth uses $(plymouth-set-default-theme 2>/dev/null || echo nothing), not frameshell; run facet boot"
+    warn "Plymouth uses $(plymouth-set-default-theme 2>/dev/null || echo nothing), not facet; run facet boot"
     all_ok=0
   fi
   if boot_splash_outdated; then
@@ -2884,10 +2896,10 @@ boot_check() {
   fi
   listing=$(initramfs_listing)
   if [[ -n $listing ]]; then
-    if grep -q 'plymouth/themes/frameshell' <<<"$listing"; then
-      ok "The initramfs has the frameshell splash"
+    if grep -q 'plymouth/themes/facet' <<<"$listing"; then
+      ok "The initramfs has the facet splash"
     else
-      warn "The initramfs has no frameshell splash, so the boot shows the old one or none; run facet boot"
+      warn "The initramfs has no facet splash, so the boot shows the old one or none; run facet boot"
       all_ok=0
     fi
     # NVIDIA's driver loads late unless it is in the initramfs; until then plymouth has
@@ -2914,11 +2926,11 @@ boot_splash_install() {
   fi
   local theme tmp f
   theme=$(current_theme)
-  [[ -f $(screens_dir)/plymouth/frameshell/frameshell.script ]] || theme_render "$theme" 0 quiet
+  [[ -f $(screens_dir)/plymouth/facet/facet.script ]] || theme_render "$theme" 0 quiet
   tmp=$(mktemp -d)
   # bloom draws its ring and pill pictures itself (images.sh, rendered with the theme)
-  if [[ -f $(screens_dir)/plymouth/frameshell/images.sh ]]; then
-    run bash "$(screens_dir)/plymouth/frameshell/images.sh" "$tmp"
+  if [[ -f $(screens_dir)/plymouth/facet/images.sh ]]; then
+    run bash "$(screens_dir)/plymouth/facet/images.sh" "$tmp"
   else
     png_solid "$tmp/line.png" 1 "$(theme_hex "$theme" frame)"
     png_solid "$tmp/fill.png" 1 "$(theme_hex "$theme" primary)"
@@ -2926,8 +2938,8 @@ boot_splash_install() {
     png_solid "$tmp/bg.png" 1 "$(theme_hex "$theme" bg)"
   fi
   run sudo install -d "$PLYMOUTH_DIR"
-  for f in frameshell.plymouth frameshell.script; do
-    run sudo install -m 644 "$(screens_dir)/plymouth/frameshell/$f" "$PLYMOUTH_DIR/$f"
+  for f in facet.plymouth facet.script; do
+    run sudo install -m 644 "$(screens_dir)/plymouth/facet/$f" "$PLYMOUTH_DIR/$f"
   done
   run sudo install -m 644 "$tmp"/*.png "$PLYMOUTH_DIR/"
   rm -rf "$tmp"
@@ -2937,13 +2949,13 @@ boot_splash_install() {
   if [[ ! -f $STATE_DIR/plymouth-theme.orig ]] && ((!DRY_RUN)); then
     local before
     before=$(plymouth-set-default-theme 2>/dev/null || true)
-    if [[ -n $before && $before != frameshell ]]; then
+    if [[ -n $before && $before != facet ]]; then
       mkdir -p "$STATE_DIR"
       echo "$before" >"$STATE_DIR/plymouth-theme.orig"
     fi
   fi
-  run sudo plymouth-set-default-theme frameshell
-  ok "Plymouth uses frameshell"
+  run sudo plymouth-set-default-theme facet
+  ok "Plymouth uses facet"
 
   info "Rebuilding the initramfs, the splash is part of it (takes a minute)"
   rebuild_initramfs && ok "initramfs rebuilt"
@@ -2961,12 +2973,12 @@ boot_tty_install() {
   tmp=$(mktemp)
   load_palette "$(current_theme)"
   vt_palette >"$tmp"
-  run sudo install -d /etc/frameshell
+  run sudo install -d /etc/facet
   run sudo install -m 644 "$tmp" "$VTRGB_FILE"
   # Before the login screen, so a text console never shows the old colors
   cat >"$tmp" <<EOF
 [Unit]
-Description=frameshell colors for the text consoles
+Description=facet colors for the text consoles
 DefaultDependencies=no
 After=systemd-vconsole-setup.service
 Before=display-manager.service getty.target
@@ -2981,7 +2993,7 @@ EOF
   run sudo install -m 644 "$tmp" "$VTRGB_UNIT"
   rm -f "$tmp"
   run sudo systemctl daemon-reload
-  run sudo systemctl enable frameshell-vtrgb.service
+  run sudo systemctl enable facet-vtrgb.service
   run_quiet sudo setvtrgb "$VTRGB_FILE" || true
   ok "Text consoles use the theme's colors (Ctrl+Alt+F3 to look)"
 }
@@ -2993,7 +3005,7 @@ cmd_boot() {
   header
   case $action in
     install)
-      info "Puts the frameshell splash ($(current_theme)) into Plymouth and the theme's colors on the text consoles (needs sudo)"
+      info "Puts the facet splash ($(current_theme)) into Plymouth and the theme's colors on the text consoles (needs sudo)"
       confirm "Set up the boot splash and console colors?" || exit 0
       step "Boot splash (Plymouth)"
       boot_splash_install
@@ -3017,7 +3029,7 @@ cmd_boot() {
         rebuild_initramfs && ok "Splash back to ${before:-bgrt}"
       fi
       step "Console colors"
-      run_quiet sudo systemctl disable frameshell-vtrgb.service || true
+      run_quiet sudo systemctl disable facet-vtrgb.service || true
       run sudo rm -f "$VTRGB_UNIT" "$VTRGB_FILE"
       run_quiet sudo setvtrgb vga || true
       ok "Default console colors"
@@ -3033,7 +3045,7 @@ cmd_grub() {
   header
   case $action in
     install)
-      info "Copies the frameshell theme ($(current_theme)) to $GRUB_THEME_DIR and sets GRUB_THEME (needs sudo)"
+      info "Copies the facet theme ($(current_theme)) to $GRUB_THEME_DIR and sets GRUB_THEME (needs sudo)"
       confirm "Install the GRUB theme?" || exit 0
       step "Dependencies"
       # bloom's menu is set in Rubik; gawk draws its pictures (Arch's base has it)
@@ -3042,7 +3054,7 @@ cmd_grub() {
       printf '\n%sDone.%s Reboot to see the new boot menu.\n\n' "$c_ok" "$c_reset"
       ;;
     remove)
-      confirm "Remove the frameshell GRUB theme?" || exit 0
+      confirm "Remove the facet GRUB theme?" || exit 0
       step "GRUB config"
       # Only comment out our line; restoring the old file would drop later edits
       run sudo sed -i -E "s|^GRUB_THEME=\"$GRUB_THEME_DIR/theme.txt\"|#&|" "$GRUB_DEFAULT_FILE"
@@ -3268,24 +3280,24 @@ render_template() {
 
 # Every installed module's templates: "<module> TAB <path>", the path relative to
 # <module>/templates, which is also where the file goes inside the module
-# Before the styles, the app themes facet theme wrote were called frameshell; they would still
+# Before the styles, the app themes facet theme wrote were called facet; they would still
 # be linked (fish would load two color files). Also links to files a module no longer has.
 prune_old_outputs() {
   local f
   for f in \
-    zed/zed/.config/zed/themes/frameshell.json \
-    terminal/fish/.config/fish/conf.d/frameshell-colors.fish \
-    terminal/ghostty/.config/ghostty/themes/frameshell \
-    spotify/spicetify/.config/spicetify/Themes/Frameshell \
-    discord/vencord/.config/vesktop/themes/frameshell.theme.css \
-    steam/steam/.local/share/Steam/millennium/themes/Frameshell \
-    dolphin/dolphin/.config/qt6ct/colors/Frameshell.conf \
-    dolphin/dolphin/.local/share/color-schemes/Frameshell.colors; do
+    zed/zed/.config/zed/themes/facet.json \
+    terminal/fish/.config/fish/conf.d/facet-colors.fish \
+    terminal/ghostty/.config/ghostty/themes/facet \
+    spotify/spicetify/.config/spicetify/Themes/Facet \
+    discord/vencord/.config/vesktop/themes/facet.theme.css \
+    steam/steam/.local/share/Steam/millennium/themes/Facet \
+    dolphin/dolphin/.config/qt6ct/colors/Facet.conf \
+    dolphin/dolphin/.local/share/color-schemes/Facet.colors; do
     [[ -e $MODULES_DIR/$f ]] && run rm -rf "${MODULES_DIR:?}/$f"
   done
   ((DRY_RUN)) && return 0
   find "$HOME/.config" "$HOME/.local/bin" "$HOME/.local/share" -maxdepth 8 -xtype l \
-    -lname '*frameshell/modules/*' -delete 2>/dev/null || true
+    -lname '*facet/modules/*' -delete 2>/dev/null || true
 }
 
 # Prints "module <tab> template path <tab> output path": a style module's templates while that
@@ -3490,7 +3502,7 @@ theme_set() {
   save_theme "$id"
   theme_render "$id" 0
   theme_reload
-  printf '\n%sDone.%s frameshell now uses %s.\n\n' "$c_ok" "$c_reset" "${PALETTE[name]:-$id}"
+  printf '\n%sDone.%s facet now uses %s.\n\n' "$c_ok" "$c_reset" "${PALETTE[name]:-$id}"
 }
 
 cmd_theme() {
@@ -3604,21 +3616,21 @@ cmd_wallpaper() {
     fi
     exec "$glint" "$@"
   fi
-  local bin="$HOME/.local/bin/frame-wallpaper"
-  [[ -x $bin ]] || bin="$(pkg_dir wallpaper)/.local/bin/frame-wallpaper"
+  local bin="$HOME/.local/bin/facet-wallpaper"
+  [[ -x $bin ]] || bin="$(pkg_dir wallpaper)/.local/bin/facet-wallpaper"
   exec "$bin" "$@"
 }
 
 # Hands everything to the Spotify Web API helper: facet spotify login, … status, … logout
 cmd_spotify() {
-  local bin="$HOME/.local/bin/frame-spotify"
-  [[ -x $bin ]] || bin="$(pkg_dir spicetify)/.local/bin/frame-spotify"
+  local bin="$HOME/.local/bin/facet-spotify"
+  [[ -x $bin ]] || bin="$(pkg_dir spicetify)/.local/bin/facet-spotify"
   exec "$bin" "$@"
 }
 
 # ── Setup ────────────────────────────────────────────────────
 
-# Always part of frameshell; the rest is asked in the setup
+# Always part of facet; the rest is asked in the setup
 CORE_PACKAGES=(ghostty fish starship fastfetch quickshell tui hypr wallpaper gtk)
 # The apps of the setup's checklist: modules, and claude for Claude Code
 OPTIONAL_APPS=(
@@ -3711,7 +3723,7 @@ setup_wizard() {
     [[ $channels == yes ]] && WANT_CHANNELS=1
   fi
 
-  # A connected keyboard that frame-keyboard knows gets it and the keyboard app
+  # A connected keyboard that facet-keyboard knows gets it and the keyboard app
   if keyboard_connected; then
     ok "A supported keyboard is plugged in, the keyboard package comes along"
     SETUP_PKGS+=(keyboard)
@@ -3849,8 +3861,8 @@ cmd_style() {
     ghostty_reload
   fi
   # A new shell.qml means a new shell; the watchdog restarts it cleanly
-  if [[ -x $HOME/.local/bin/frame-shell-watchdog ]]; then
-    run_quiet "$HOME/.local/bin/frame-shell-watchdog" restart || true
+  if [[ -x $HOME/.local/bin/facet-shell-watchdog ]]; then
+    run_quiet "$HOME/.local/bin/facet-shell-watchdog" restart || true
   fi
   ok "Style: $want"
   info "The login and boot screens follow with: facet login and facet boot (sudo)"
@@ -4207,7 +4219,7 @@ cmd_restore() {
 }
 
 # ── Clean ────────────────────────────────────────────────────
-# Packages frameshell needed once and does not any more (its own code does the job now);
+# Packages facet needed once and does not any more (its own code does the job now);
 # facet clean offers them for removal when nothing else depends on them
 RETIRED_PACKAGES=(ttf-jetbrains-mono-nerd hypridle swaybg cliphist fd wtype unicode-emoji sound-theme-freedesktop pacman-contrib)
 FREED=0
@@ -4277,7 +4289,7 @@ cmd_clean() {
     retired+=("$pkg")
   done
   if ((${#retired[@]})); then
-    info "frameshell does its own thing instead of these now: ${retired[*]}"
+    info "facet does its own thing instead of these now: ${retired[*]}"
     info "Keep the ones you use yourself (answer no and remove the others by hand)"
     clean_item "Remove them" "$(pkg_bytes "${retired[@]}")" sudo pacman -Rns --noconfirm "${retired[@]}"
   fi
@@ -4372,7 +4384,7 @@ cmd_status() {
 
   if grep -qs fastfetch /usr/share/cachyos-fish-config/cachyos-config.fish; then
     warn "CachyOS's fish config runs fastfetch too, you may see it twice"
-    info "Fix: remove the cachyos-config line in ~/.config/fish/config.fish, or keep theirs and drop fish_greeting in conf.d/frameshell.fish"
+    info "Fix: remove the cachyos-config line in ~/.config/fish/config.fish, or keep theirs and drop fish_greeting in conf.d/facet.fish"
   fi
 
   [[ :$PATH: == *":$HOME/.local/bin:"* ]] || warn "~/.local/bin is not in PATH, the facet command will not be found"
@@ -4384,8 +4396,8 @@ cmd_status() {
   if [[ -d $GREETER_DIR ]]; then
     local greetd_config
     greetd_config=$(greetd_config_path)
-    if [[ -r $greetd_config && $(greetd_default_command "$greetd_config") == "$GREETER_DIR/frame-greeter-session" ]]; then
-      ok "Login screen: frameshell greeter ($greetd_config)"
+    if [[ -r $greetd_config && $(greetd_default_command "$greetd_config") == "$GREETER_DIR/facet-greeter-session" ]]; then
+      ok "Login screen: facet greeter ($greetd_config)"
     else
       warn "Login screen files are installed, but greetd ($greetd_config) starts something else; run facet login again"
     fi

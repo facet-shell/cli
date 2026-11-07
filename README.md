@@ -15,8 +15,8 @@ themes. The themes themselves live here too (`themes/*.json`).
 curl -fsSL https://facet-shell.github.io/install.sh | bash
 ```
 
-That puts the CLI in `~/.local/share/frameshell/cli` and starts the setup. Only the modules you
-pick are downloaded, to `~/.local/share/frameshell/modules`.
+That puts the CLI in `~/.local/share/facet/cli` and starts the setup. Only the modules you
+pick are downloaded, to `~/.local/share/facet/modules`.
 
 ```
 facet                      a menu of the everyday commands
@@ -39,3 +39,17 @@ linux-wallpaperengine or mpvpaper. Existing Glint state is preserved.
 The Quickshell launcher and Super+W control wallpapers directly. For terminal use,
 `facet wallpaper` opens Glint's TUI and `facet wallpaper <command>` forwards to
 its CLI. Workshop downloads in that interface require SteamCMD separately.
+
+## Directory migration
+
+User data now lives in `~/.local/share/facet`, state in `~/.local/state/facet`,
+configuration in `~/.config/facet` and cache in `~/.cache/facet`. Helpers use the
+`facet-` prefix and Hyprland modules live in `hypr/facet`.
+
+The CLI migrates old directories automatically without replacing existing data.
+Temporary links preserve access for running clients and old launch commands.
+A collision between an old and new directory stops migration for manual inspection.
+Preview the path migration with `python3 tools/migrate-layout.py --dry-run`; test it
+with `python3 tests/test-migrate-layout.py`. System-wide login and boot files need
+their normal privileged install commands again to adopt the new names; existing
+installed copies remain functional until then.

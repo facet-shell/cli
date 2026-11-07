@@ -232,9 +232,7 @@ declare -A DEPS=(
   [bloom]="ttf-rubik-vf ttf-material-symbols-variable ttf-jetbrains-mono noto-fonts-emoji"
   # Idle lock and screen off live in the shell (lockscreen/Lock.qml), no hypridle
   [hypr]=""
-  # ffmpeg makes the video thumbnails in the wallpaper app; linux-wallpaperengine
-  # comes on top when the "both" backend is picked
-  [wallpaper]="jq mpvpaper ffmpeg"
+  [wallpaper]="jq ffmpeg ncurses vulkan-icd-loader wayland pipewire glslang lz4 freetype2 harfbuzz fontconfig quickjs-ng sdbus-cpp"
   # frame-keyboard talks to the keyboards over hidraw with nothing but Python
   [keyboard]="python"
   # adw-gtk-theme (GTK 3 apps in the libadwaita look) is used when it is there, not required
@@ -762,13 +760,13 @@ usage() {
 
   ${b}Apps${r}
     ${s}spotify${r} login|status      connect the Spotify Web API for the launcher; logout forgets it
-    ${s}wallpaper${r} <…>             wallpaper backends: both, mpv, image (facet wallpaper help)
+    ${s}wallpaper${r} <…>             control glint (list, set, status, configure, …)
     ${s}goxlr${r}                     GoXLR faders, buttons and animation in the theme's colors
     ${s}audio channels${r} on|off     virtual System, Game, Chat, Music outputs without a GoXLR
                               (on [names] [--output <sink>], output <sink>, status)
     ${s}keyboard${r} [list|set]       the supported keyboards, which one is yours (no name: pick)
                               (search <text>; request: how to ask for another one)
-    ${m}e.g. facet wallpaper backend mpv${r}
+    ${m}e.g. facet wallpaper list roxy${r}
 
   ${b}System${r}
     ${s}login${r} [install|remove]    the lockscreen look as the login screen (greetd, sudo)
@@ -1566,35 +1564,44 @@ post_zen() {
   return 0
 }
 
-# Asks for the wallpaper backend once; later changes go through: facet wallpaper backend …
 post_wallpaper() {
-  local bin="$HOME/.local/bin/frame-wallpaper" state="$STATE_DIR/wallpaper.json" backend
-  if [[ -f $state ]] && command -v jq >/dev/null; then
-    backend="$(jq -r '.backend // "both"' "$state")"
-    ok "Wallpaper backend: $backend"
+  local src="$DATA_DIR/glint" bin="$HOME/.local/bin/glint"
+  local config="${XDG_CONFIG_HOME:-$HOME/.config}/quickshell/services"
+  if ((!DRY_RUN)) && [[ ! -f $config/GlintClient.qml || ! -f $config/WallpaperState.js || ! -x $HOME/.local/bin/frame-glint-start ]]; then
+    die "The installed Quickshell module needs the glint integration" "update the core module, then run: facet install quickshell hypr wallpaper"
+  fi
+  if [[ -x $bin && ! -d $src/.git && $("$bin" --help) == *"glint download "* ]]; then
+    ok "Using the installed glint ($bin)"
   else
-    backend="$(choose "Which wallpapers should run?" \
-      "both|Wallpaper Engine scenes from the Steam Workshop, plus videos and images" \
-      "mpv|only your own videos and images (mpvpaper, swaybg)" \
-      "image|only still images, lowest power use")"
-  fi
-  if [[ $backend == both ]] && ! command -v linux-wallpaperengine >/dev/null; then
-    info "Wallpaper Engine scenes need linux-wallpaperengine (AUR) and Wallpaper Engine bought on Steam"
-    install_deps linux-wallpaperengine-git
-  fi
-  if ((DRY_RUN)); then
-    info "would run: frame-wallpaper backend $backend"
-  elif [[ -x $bin ]]; then
-    if "$bin" backend "$backend" >/dev/null; then
-      ok "Backend set to $backend"
+    install_deps git cmake ninja gcc pkgconf vulkan-headers volk wayland-protocols wlr-protocols nlohmann-json
+    if [[ ! -d $src/.git ]]; then
+      task "Getting glint" "glint downloaded" git clone --depth 1 https://github.com/vxnsin/glint.git "$src" \
+        || die "Could not download glint" "check your internet connection and retry"
+    elif [[ -z $(git -C "$src" status --porcelain --untracked-files=no) ]]; then
+      task "Updating glint" "glint updated" git -C "$src" pull --ff-only \
+        || die "Could not update glint" "check the connection and the glint source checkout"
     else
-      warn "Could not set the backend, try again with: facet wallpaper backend $backend"
+      warn "The glint checkout has local changes; building it without pulling"
     fi
-  else
-    warn "frame-wallpaper is not linked yet, run: facet install wallpaper"
+    task "Configuring glint" "glint configured" cmake -S "$src" -B "$src/build/facet" -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release -DGLINT_PLATFORM=ON \
+      || die "Could not configure glint" "check the build dependencies and retry with -v"
+    task "Building glint" "glint built" cmake --build "$src/build/facet" --target glint --parallel 2 \
+      || die "Could not build glint" "retry with -v for the compiler error"
+    task "Installing glint" "glint installed" cmake --install "$src/build/facet" --prefix "$HOME/.local" \
+      || die "Could not install glint" "check permissions in ~/.local"
   fi
-  info "Super+W opens the wallpaper app; folders: ~/Pictures/wallpapers and assets/wallpapers"
-  info "Change the backend later with: facet wallpaper backend both|mpv|image"
+  run mkdir -p "$STATE_DIR"
+  if ((DRY_RUN)); then
+    info "would enable glint as the wallpaper backend"
+  else
+    local marker
+    marker=$(mktemp "$STATE_DIR/.wallpaper-backend.XXXXXX")
+    printf '%s\n' glint >"$marker"
+    mv "$marker" "$STATE_DIR/wallpaper-backend"
+    ok "Glint enabled for the launcher and Super+W; it starts with Hyprland"
+  fi
+  info "Wallpaper Engine scenes require the app to be owned on Steam"
 }
 
 # ── Keyboards ────────────────────────────────────────────────
@@ -3584,8 +3591,19 @@ png_solid() {
 
 # ── Commands ─────────────────────────────────────────────────
 
-# Hands everything to the wallpaper helper: facet wallpaper backend mpv, … set <file>, …
+# Pass wallpaper commands to glint when it is enabled.
 cmd_wallpaper() {
+  if [[ -f $STATE_DIR/wallpaper-backend ]] && [[ $(<"$STATE_DIR/wallpaper-backend") == glint ]]; then
+    local glint="$HOME/.local/bin/glint"
+    [[ -x $glint ]] || die "glint is not installed" "run: facet install wallpaper"
+    if (($# == 0)); then
+      exec "$glint"
+    fi
+    if [[ $1 == help ]]; then
+      exec "$glint" --help
+    fi
+    exec "$glint" "$@"
+  fi
   local bin="$HOME/.local/bin/frame-wallpaper"
   [[ -x $bin ]] || bin="$(pkg_dir wallpaper)/.local/bin/frame-wallpaper"
   exec "$bin" "$@"

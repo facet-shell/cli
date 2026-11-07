@@ -47,9 +47,7 @@ _facet() {
             spotify) words="login logout status" ;;
             wallpaper)
                 if ((COMP_CWORD == 2)); then
-                    words="list set option backend apply pause resume stop"
-                elif [[ $prev == backend ]]; then
-                    words="both mpv image"
+                    words="tui list choose inspect set unset status configure props pause resume screenshot subscribe version outputs download import"
                 elif [[ $prev == set ]]; then
                     mapfile -t COMPREPLY < <(compgen -f -- "$cur")
                     return

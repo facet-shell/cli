@@ -28,3 +28,14 @@ facet help                 everything else
 ```
 
 Ideas and bugs: [the board](https://github.com/orgs/facet-shell/projects/1).
+
+## Wallpapers
+
+`facet install quickshell hypr wallpaper` installs Glint and enables it for the
+native wallpaper views and Hyprland autostart. It reuses a compatible Glint binary
+in `~/.local/bin`, or builds one from source. This path no longer installs
+linux-wallpaperengine or mpvpaper. Existing Glint state is preserved.
+
+The Quickshell launcher and Super+W control wallpapers directly. For terminal use,
+`facet wallpaper` opens Glint's TUI and `facet wallpaper <command>` forwards to
+its CLI. Workshop downloads in that interface require SteamCMD separately.

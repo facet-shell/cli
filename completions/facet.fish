@@ -47,8 +47,7 @@ complete -c facet -n "__fish_seen_subcommand_from boot" -a "install check remove
 complete -c facet -n "__fish_seen_subcommand_from layout" -a "tiling canvas"
 complete -c facet -n "__fish_seen_subcommand_from style" -a "list (__facet_list styles)" -d style
 complete -c facet -n "__fish_seen_subcommand_from spotify" -a "login logout status"
-complete -c facet -n "__fish_seen_subcommand_from wallpaper; and not __fish_seen_subcommand_from list set option backend apply pause resume stop" -a "list set option backend apply pause resume stop"
-complete -c facet -n "__fish_seen_subcommand_from wallpaper; and __fish_seen_subcommand_from backend" -a "both mpv image"
+complete -c facet -n "__fish_seen_subcommand_from wallpaper; and not __fish_seen_subcommand_from tui list choose inspect set unset status configure props pause resume screenshot subscribe version outputs download import" -a "tui list choose inspect set unset status configure props pause resume screenshot subscribe version outputs download import"
 complete -c facet -n "__fish_seen_subcommand_from wallpaper; and __fish_seen_subcommand_from set" -F
 
 # keyboard list|search <text>|set [board]|request

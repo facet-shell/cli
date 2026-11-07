@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory() as temp:
     fish = config / "fish/conf.d"
     fish.mkdir(parents=True)
     (fish / "frameshell.fish").write_text("# config\n")
+    (config / "facet").mkdir()
     before = list(home.rglob("*"))
     migration.migrate(home, data, state, config, cache, dry_run=True)
     assert list(home.rglob("*")) == before

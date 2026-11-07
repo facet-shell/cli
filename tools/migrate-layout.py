@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def renamed(text):
-    for old, new in (("frameshell", "facet"), ("frame-", "facet-"), ("frame/", "facet/"), ("frame: ", "facet: ")):
+    for old, new in (("frameshell", "facet"), ("frame-", "facet-"), ("frame/", "facet/")):
         text = text.replace(old, new)
     return text
 
@@ -29,6 +29,8 @@ def migrate(home, data, state, config, cache, dry_run=False):
               (data / "millennium/plugins/frameshell", data / "millennium/plugins/facet")]
     for old, new in moves:
         if exists(old) and not old.is_symlink() and exists(new):
+            if not new.is_symlink() and new.is_dir() and not any(new.iterdir()):
+                continue
             raise RuntimeError(f"Both {old} and {new} exist; refusing to merge or replace data")
     changes = []
     for old, new in moves:
@@ -36,6 +38,8 @@ def migrate(home, data, state, config, cache, dry_run=False):
             continue
         changes.append(f"{old} -> {new}")
         if not dry_run:
+            if new.is_dir() and not new.is_symlink():
+                new.rmdir()
             old.rename(new)
             old.symlink_to(new.name)
 

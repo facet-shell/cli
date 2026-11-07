@@ -2046,9 +2046,9 @@ disable_notification_daemons() {
     fi
     for f in "${files[@]}"; do
       if [[ $f == *.lua ]]; then
-        run sed -i -E "s|^([[:space:]]*hl\\.exec_cmd\\(.*\\b$d\\b.*)|-- facet: \\1|" "$HOME/$f"
+        run sed -i -E "s|^([[:space:]]*hl\\.exec_cmd\\(.*\\b$d\\b.*)|-- frame: \\1|" "$HOME/$f"
       else
-        run sed -i -E "s|^([[:space:]]*exec(-once)?[[:space:]]*=.*\\b$d\\b.*)|# facet: \\1|" "$HOME/$f"
+        run sed -i -E "s|^([[:space:]]*exec(-once)?[[:space:]]*=.*\\b$d\\b.*)|# frame: \\1|" "$HOME/$f"
       fi
     done
   done
@@ -2165,10 +2165,10 @@ grub_apply() {
   if [[ -z $regular || -z $bold ]] && ((!DRY_RUN)); then
     die "JetBrains Mono not found" "install it: sudo pacman -S ttf-jetbrains-mono"
   fi
-  # Names must match theme.txt: "Frame Mono Regular 16" etc.
-  run grub-mkfont -n "Frame Mono" -s 14 -o "$tmp/facet-regular-14.pf2" "$regular"
-  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/facet-regular-16.pf2" "$regular"
-  run grub-mkfont -n "Frame Mono" -s 16 -o "$tmp/facet-bold-16.pf2" "$bold"
+  # Names must match theme.txt: "Facet Mono Regular 16" etc.
+  run grub-mkfont -n "Facet Mono" -s 14 -o "$tmp/facet-regular-14.pf2" "$regular"
+  run grub-mkfont -n "Facet Mono" -s 16 -o "$tmp/facet-regular-16.pf2" "$regular"
+  run grub-mkfont -n "Facet Mono" -s 16 -o "$tmp/facet-bold-16.pf2" "$bold"
   ok "Fonts built"
 
   step "Theme files"

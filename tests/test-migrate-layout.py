@@ -18,6 +18,9 @@ with tempfile.TemporaryDirectory() as temp:
     bin_dir = home / ".local/bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "frame-glint-start").symlink_to(str(helper).replace("/facet-", "/frame-"))
+    plugin = data / "millennium/plugins/frameshell"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.json").write_text("{}")
     (config / "hypr/frame").mkdir(parents=True)
     (config / "hypr/hyprland.lua").write_text('require("frame/shell")\n')
     extensions = config / "spicetify/Extensions"
@@ -34,11 +37,21 @@ with tempfile.TemporaryDirectory() as temp:
     for base in (data, state, config, cache):
         assert (base / "facet/keep").read_text() == "preserved"
         assert (base / "frameshell").is_symlink()
+    assert (data / "millennium/plugins/facet/plugin.json").is_file()
+    assert not (data / "millennium/plugins/frameshell").exists()
     assert (bin_dir / "facet-glint-start").read_text() == "start"
     assert (bin_dir / "frame-glint-start").read_text() == "start"
     assert 'require("facet/shell")' in (config / "hypr/hyprland.lua").read_text()
     assert 'window.FACET_TOKEN = "test-value";' in (extensions / "facet-token.js").read_text()
     assert (fish / "facet.fish").is_file() and not (fish / "frameshell.fish").exists()
+    assert migration.migrate(home, data, state, config, cache) == []
+    legacy_plugin = data / "millennium/plugins/frameshell"
+    legacy_plugin.symlink_to("facet")
+    assert migration.migrate(home, data, state, config, cache, dry_run=True)
+    assert legacy_plugin.is_symlink()
+    assert migration.migrate(home, data, state, config, cache)
+    assert not legacy_plugin.is_symlink()
+    assert (data / "millennium/plugins/facet/plugin.json").is_file()
     assert migration.migrate(home, data, state, config, cache) == []
 with tempfile.TemporaryDirectory() as temp:
     home = Path(temp)

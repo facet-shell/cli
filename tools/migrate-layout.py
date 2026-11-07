@@ -33,7 +33,16 @@ def migrate(home, data, state, config, cache, dry_run=False):
                 continue
             raise RuntimeError(f"Both {old} and {new} exist; refusing to merge or replace data")
     changes = []
+    plugin_old = data / "millennium/plugins/frameshell"
+    plugin_new = data / "millennium/plugins/facet"
     for old, new in moves:
+        # Millennium discovers each directory entry separately, including symlinks.
+        # A legacy alias to the same plugin makes it load twice and can hang Steam.
+        if old == plugin_old and old.is_symlink() and new.exists() and old.resolve() == new.resolve():
+            changes.append(f"remove duplicate plugin link {old}")
+            if not dry_run:
+                old.unlink()
+            continue
         if not exists(old) or old.is_symlink():
             continue
         changes.append(f"{old} -> {new}")
@@ -41,7 +50,8 @@ def migrate(home, data, state, config, cache, dry_run=False):
             if new.is_dir() and not new.is_symlink():
                 new.rmdir()
             old.rename(new)
-            old.symlink_to(new.name)
+            if old != plugin_old:
+                old.symlink_to(new.name)
 
     roots = [home / ".local/bin", config, data / "applications", data / "millennium", data / "facet"]
     for root in roots:
